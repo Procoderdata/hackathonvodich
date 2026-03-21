@@ -1,0 +1,28 @@
+{
+  "refreshed_at_utc": "2026-03-20T14:20:48.053068+00:00",
+  "source": "NASA Exoplanet Archive TAP / pscomppars",
+  "query": "SELECT\n  pl_name,\n  hostname,\n  disc_year,\n  disc_facility,\n  sy_dist,\n  ra,\n  dec,\n  pl_orbper,\n  pl_orbsmax,\n  pl_orbeccen,\n  pl_orbincl,\n  pl_orblper,\n  pl_orbtper,\n  pl_tranmid,\n  pl_rade,\n  pl_bmasse,\n  pl_eqt,\n  pl_insol,\n  st_rad,\n  st_teff\nFROM pscomppars\nWHERE pl_orbper IS NOT NULL\n  AND pl_orbsmax IS NOT NULL",
+  "rows": 1500,
+  "columns": [
+    "pl_name",
+    "hostname",
+    "disc_year",
+    "disc_facility",
+    "sy_dist",
+    "ra",
+    "dec",
+    "pl_orbper",
+    "pl_orbsmax",
+    "pl_orbeccen",
+    "pl_orbincl",
+    "pl_orblper",
+    "pl_orbtper",
+    "pl_tranmid",
+    "pl_rade",
+    "pl_bmasse",
+    "pl_eqt",
+    "pl_insol",
+    "st_rad",
+    "st_teff"
+  ]
+}

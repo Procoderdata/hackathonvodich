@@ -1,0 +1,25 @@
+# macOS / Editor
+.DS_Store
+.vscode/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+logs/*
+!logs/.gitkeep
+*.log
+
+# Node / frontend builds
+node_modules/
+dist/
+build/
+
+# Misc
+.pytest_cache/
+.mypy_cache/
