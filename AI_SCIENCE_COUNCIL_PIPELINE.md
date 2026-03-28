@@ -41,7 +41,7 @@ Thay vi 1 chatbot duy nhat, he thong co mot hoi dong AI cung phan tich, tranh lu
 
 ```mermaid
 flowchart TD
-    A[Player action in UI\nselect planet / change filter / start scan / ask why] --> B[Frontend State Aggregator]
+    A[Player action in UI\nselect planet or change filter or start scan or ask why] --> B[Frontend State Aggregator]
     B --> C[Council API Request Builder]
     C --> D[Council Orchestrator]
 
@@ -55,7 +55,7 @@ flowchart TD
     T2 --> A1[Astrobiologist Agent]
     T3 --> N
     T4 --> R[Archivist Agent]
-    T5 --> C1[Climate/Orbital Agent]
+    T5 --> C1[Climate Orbital Agent]
     T1 --> C1
     T2 --> C1
 
@@ -87,13 +87,13 @@ sequenceDiagram
     participant Player
     participant UI as Command Center UI
     participant API as Council Orchestrator API
-    participant Tools as Data/Simulation Tools
+    participant Tools as Data Simulation Tools
     participant Nav as Navigator
     participant Astro as Astrobiologist
     participant Climate as Climate Agent
     participant Archive as Archivist
 
-    Player->>UI: Chon 1 planet / bat scan / hoi "co dang song duoc khong?"
+    Player->>UI: Chon 1 planet hoac bat scan hoac hoi kha nang song
     UI->>API: session_state + selected_target + mode + player_goal
     API->>Tools: Lay orbital objects, metadata, challenge state, current filters
     Tools-->>API: Structured scientific context

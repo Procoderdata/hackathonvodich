@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-    T[Trigger cron/manual] --> E[Extract NASA archive]
+    T[Trigger schedule or manual] --> E[Extract NASA archive]
     E --> N[Normalize columns]
     N --> V[Validate required fields]
     V -->|pass| W1[Write orbital_elements.csv]
@@ -36,7 +36,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     U[User action
-scan/filter/select] --> FE[Frontend state aggregation]
+scan or filter or select] --> FE[Frontend state aggregation]
     FE --> P[Build mission_context_packet]
     P --> API[Call Council Respond Endpoint]
     API --> OR[Orchestrator parse + policy]
@@ -108,9 +108,9 @@ UI policy:
 
 ```mermaid
 flowchart LR
-    C1[Code change] --> C2[Unit tests council_tools/orchestrator]
+    C1[Code change] --> C2[Unit tests council tools and orchestrator]
     C2 --> C3[API smoke council endpoint]
-    C3 --> C4[Frontend smoke trigger scan/filter]
+    C3 --> C4[Frontend smoke trigger scan and filter]
     C4 --> C5[Build check]
     C5 --> C6[Demo rehearsal]
 ```
