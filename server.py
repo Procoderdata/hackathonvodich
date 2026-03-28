@@ -6,9 +6,10 @@ import json
 import math
 from pathlib import Path
 
-from flask import Flask, jsonify, send_file, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 import pandas as pd
+from council_orchestrator import generate_council_response
 
 app = Flask(__name__)
 CORS(app)
@@ -448,6 +449,22 @@ def get_planet_details(planet_id):
     }
 
     return jsonify(details)
+
+
+@app.route("/api/council/respond", methods=["POST"])
+def council_respond():
+    """
+    Deterministic multi-agent style council response.
+    Produces structured recommendations without inventing scientific fields.
+    """
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        objects = build_orbital_objects()
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load orbital catalog: {exc}"}), 500
+
+    return jsonify(generate_council_response(objects, payload))
 
 
 @app.route("/<path:path>")
