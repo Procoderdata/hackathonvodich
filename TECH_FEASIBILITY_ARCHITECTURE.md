@@ -5,6 +5,20 @@
 ---
 
 ## 1) System architecture (layered view)
+
+```mermaid
+flowchart TB
+    subgraph FE[Frontend Layer]
+      FE1[Command Center Page]
+      FE2[Orrery Engine]
+      FE3[Console and Mission UI]
+    end
+
+    subgraph API[Application Layer]
+      AP1[Orbital Objects Endpoint]
+      AP2[Planet Detail Endpoint]
+      AP3[Council Respond Endpoint]
+      AP4[Orbital Meta Endpoint]
 # Atlas Orrery — Pipeline & Kiến trúc hệ thống (Blueprint triển khai cực chi tiết)
 
 > Mục tiêu: từ bản ý tưởng chuyển thành **kế hoạch code + vận hành** mà giám khảo kỹ thuật có thể kiểm chứng.
@@ -35,6 +49,13 @@ flowchart TB
     end
 
     subgraph DATA[Data Layer]
+      D1[Orbital Elements CSV]
+      D2[Orbital Elements Meta JSON]
+      D3[TOI and K2 Catalog CSV]
+    end
+
+    subgraph JOB[ETL Layer]
+      J1[Refresh Orbital Catalog Script]
       D1[data/orbital_elements.csv]
       D2[data/orbital_elements.meta.json]
       D3[data/TOI_*.csv, data/k2*.csv]
@@ -64,6 +85,23 @@ flowchart TB
 
 ```mermaid
 graph TD
+    subgraph Frontend[Frontend Modules]
+      F1[Command Center Page File]
+      F2[Console Panel File]
+      F3[Orrery Engine File]
+    end
+
+    subgraph Backend[Backend Modules]
+      B1[Server File]
+      B2[Council Orchestrator File]
+      B3[Council Schemas File]
+      B4[Council Tools File]
+    end
+
+    subgraph Data[Data Assets]
+      D1[Orbital Elements Data]
+      D2[Orbital Elements Metadata]
+      D3[TOI and K2 Data]
     subgraph Frontend["Frontend modules"]
       F1["CommandCenterPage.jsx"]
       F2["ConsolePanel.jsx"]
