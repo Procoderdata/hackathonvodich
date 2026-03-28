@@ -9,6 +9,7 @@
 ```mermaid
 flowchart LR
     T[Trigger schedule or manual] --> E[Extract NASA archive]
+    T[Trigger cron/manual] --> E[Extract NASA archive]
     E --> N[Normalize columns]
     N --> V[Validate required fields]
     V -->|pass| W1[Write orbital_elements.csv]
@@ -39,6 +40,9 @@ flowchart LR
 scan or filter or select] --> FE[Frontend state aggregation]
     FE --> P[Build mission_context_packet]
     P --> API[Call Council Respond Endpoint]
+scan/filter/select] --> FE[Frontend state aggregation]
+    FE --> P[Build mission_context_packet]
+    P --> API[POST /api/council/respond]
     API --> OR[Orchestrator parse + policy]
     OR --> TL1[rank_targets_for_context]
     OR --> TL2[compute_habitability_score]
@@ -88,6 +92,7 @@ flowchart TD
 sequenceDiagram
     participant FE as CommandCenterPage
     participant API as CouncilAPI
+    participant API as /api/council/respond
     participant UI as ConsolePanel
 
     FE->>API: POST mission_context_packet
@@ -111,6 +116,9 @@ flowchart LR
     C1[Code change] --> C2[Unit tests council tools and orchestrator]
     C2 --> C3[API smoke council endpoint]
     C3 --> C4[Frontend smoke trigger scan and filter]
+    C1[Code change] --> C2[Unit tests council_tools/orchestrator]
+    C2 --> C3[API smoke /api/council/respond]
+    C3 --> C4[Frontend smoke trigger scan/filter]
     C4 --> C5[Build check]
     C5 --> C6[Demo rehearsal]
 ```
@@ -144,3 +152,4 @@ Minimum gates:
 
 4. **Data refresh lỗi gần giờ demo**
    - lock dataset stable trước demo window.
+
