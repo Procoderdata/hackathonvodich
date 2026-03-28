@@ -44,6 +44,7 @@ function CommandCenterPage() {
   const [selectedPiz, setSelectedPiz] = useState(null);
   const [selectedSatellite, setSelectedSatellite] = useState(0);
   const [discoveries, setDiscoveries] = useState([]);
+  const [councilLoading, setCouncilLoading] = useState(false);
   const [consoleLines, setConsoleLines] = useState([
     { id: 1, type: 'command', message: 'ATLAS AI: System initialized. Welcome, Director.' },
     { id: 2, type: 'info', message: 'Deep space sensors active. Awaiting real-data synchronization.' },
@@ -58,6 +59,52 @@ function CommandCenterPage() {
       return merged.slice(-120);
     });
   }, []);
+
+  const requestCouncilBrief = useCallback(async (reason, extra = {}) => {
+    if (councilLoading) return;
+    setCouncilLoading(true);
+    try {
+      const response = await fetch('/api/council/respond', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'discovery',
+          player_goal: 'find potentially habitable worlds',
+          selected_planet_id: extra.selectedPlanetId || null,
+          selected_piz_id: selectedPiz?.id || null,
+          filters,
+          challenge_state: { active: false, objective: '', progress: 0 },
+          recent_actions: [reason],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Council API unavailable (${response.status})`);
+      }
+
+      const payload = await response.json();
+      appendLog({ type: 'command', message: `COUNCIL: ${payload.headline}` });
+
+      if (payload.primary_recommendation?.action && payload.primary_recommendation?.target_id) {
+        appendLog({
+          type: 'info',
+          message: `Recommend: ${payload.primary_recommendation.action} -> ${payload.primary_recommendation.target_id}`,
+        });
+      }
+
+      (payload.council_votes || []).slice(0, 3).forEach((vote) => {
+        const prefix = vote.stance === 'caution' ? '⚠' : '✓';
+        appendLog({
+          type: vote.stance === 'caution' ? 'warning' : 'info',
+          message: `${prefix} ${vote.agent} (${Math.round((vote.confidence || 0) * 100)}%): ${vote.message}`,
+        });
+      });
+    } catch (error) {
+      appendLog({ type: 'warning', message: `Council brief failed: ${error.message}` });
+    } finally {
+      setCouncilLoading(false);
+    }
+  }, [appendLog, councilLoading, filters, selectedPiz]);
 
   const openPlanetDetails = useCallback(async (planetData) => {
     try {
@@ -167,7 +214,8 @@ function CommandCenterPage() {
       engineRef.current?.setFilters(next);
       return next;
     });
-  }, []);
+    requestCouncilBrief('filter_adjusted');
+  }, [requestCouncilBrief]);
 
   const handleSelectSatellite = useCallback((index) => {
     setSelectedSatellite(index);
@@ -177,7 +225,8 @@ function CommandCenterPage() {
   const handleScan = useCallback((pattern) => {
     appendLog({ type: 'command', message: `Initiating ${pattern.toUpperCase()} scan protocol...` });
     engineRef.current?.startScan(pattern);
-  }, [appendLog]);
+    requestCouncilBrief(`${pattern}_scan`);
+  }, [appendLog, requestCouncilBrief]);
 
   const handleSpeedSelect = useCallback((value) => {
     engineRef.current?.setTimeScale(value, true);
