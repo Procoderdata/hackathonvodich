@@ -6,7 +6,7 @@ import json
 import math
 from pathlib import Path
 
-from flask import Flask, jsonify, send_file, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 import pandas as pd
 
@@ -182,6 +182,98 @@ def is_habitable(row):
     radius = safe_float(row.get("pl_rade"), 0)
     insol = safe_float(row.get("pl_insol"), 0)
     return 220 < temp < 330 and 0.7 < radius < 2.2 and 0.3 < insol < 2.2
+
+
+def compute_habitability_score(planet: dict) -> float:
+    """Deterministic baseline score in range [0, 1]."""
+    radius = safe_float(planet.get("radius"), 1.0)
+    temp = safe_float(planet.get("temp"), 300.0)
+    insol = safe_float(planet.get("insolation"), 1.0)
+    eccentricity = clamp(safe_float(planet.get("orbit", {}).get("eccentricity"), 0.0), 0.0, 0.95)
+    distance_pc = max(0.0, safe_float(planet.get("distance_pc"), 0.0))
+
+    radius_score = max(0.0, 1.0 - (abs(radius - 1.1) / 2.4))
+    temp_score = max(0.0, 1.0 - (abs(temp - 288.0) / 220.0))
+    insol_score = max(0.0, 1.0 - (abs(insol - 1.0) / 2.6))
+    eccentricity_penalty = eccentricity * 0.35
+    distance_penalty = min(0.28, distance_pc / 2200.0)
+
+    raw = (0.37 * radius_score) + (0.32 * temp_score) + (0.31 * insol_score)
+    return clamp(raw - eccentricity_penalty - distance_penalty, 0.0, 1.0)
+
+
+def rank_targets_for_context(objects: list[dict], filters: dict | None) -> list[dict]:
+    """Apply context filters and return top-ranked targets."""
+    filters = filters or {}
+    show_confirmed = bool(filters.get("showConfirmed", True))
+    show_habitable = bool(filters.get("showHabitable", True))
+    radius_min = safe_float(filters.get("radiusMin"), 0.0)
+    radius_max = safe_float(filters.get("radiusMax"), 30.0)
+    period_min = safe_float(filters.get("periodMin"), 0.0)
+    period_max = safe_float(filters.get("periodMax"), 5000.0)
+
+    ranked = []
+    for item in objects:
+        if not show_confirmed and item.get("category") == "confirmed_planet":
+            continue
+        if not show_habitable and bool(item.get("habitable", False)):
+            continue
+
+        radius = safe_float(item.get("radius"), 0.0)
+        period = safe_float(item.get("period"), 0.0)
+        if radius < radius_min or radius > radius_max:
+            continue
+        if period < period_min or period > period_max:
+            continue
+
+        score = compute_habitability_score(item)
+        ranked.append({**item, "score": score})
+
+    ranked.sort(key=lambda planet: (planet["score"], bool(planet.get("habitable", False))), reverse=True)
+    return ranked[:25]
+
+
+def build_council_votes(primary: dict, mode: str) -> list[dict]:
+    score = safe_float(primary.get("score"), 0.0)
+    eccentricity = safe_float(primary.get("orbit", {}).get("eccentricity"), 0.0)
+    temp = safe_float(primary.get("temp"), 300.0)
+    insol = safe_float(primary.get("insolation"), 1.0)
+    period = safe_float(primary.get("period"), 0.0)
+
+    navigator_conf = clamp(0.45 + (score * 0.5), 0.1, 0.99)
+    astro_conf = clamp(0.4 + (score * 0.55), 0.1, 0.99)
+    climate_conf = clamp(0.42 + (eccentricity * 0.4) + (abs(insol - 1.0) * 0.06), 0.1, 0.99)
+
+    action_phrase = "targeted follow-up" if mode == "discovery" else "deep verification"
+    climate_stance = "caution" if eccentricity > 0.22 or not (240 <= temp <= 340) else "support"
+
+    return [
+        {
+            "agent": "Navigator",
+            "stance": "support",
+            "confidence": round(navigator_conf, 2),
+            "message": f"Recommend {action_phrase} on {primary.get('id', 'the selected target')} based on ranking gain.",
+            "evidence_fields": ["pl_orbper", "pl_orbsmax", "sy_dist"],
+        },
+        {
+            "agent": "Astrobiologist",
+            "stance": "support",
+            "confidence": round(astro_conf, 2),
+            "message": "Radius-temperature-insolation triad is within exploratory viability bounds.",
+            "evidence_fields": ["pl_rade", "pl_eqt", "pl_insol"],
+        },
+        {
+            "agent": "Climate",
+            "stance": climate_stance,
+            "confidence": round(climate_conf, 2),
+            "message": (
+                f"Orbital eccentricity={eccentricity:.2f}, period={period:.1f}d suggests uncertainty bands."
+                if climate_stance == "caution"
+                else "Orbital stability appears acceptable for current simulation assumptions."
+            ),
+            "evidence_fields": ["pl_orbeccen", "pl_orbper", "pl_orbincl"],
+        },
+    ]
 
 
 @lru_cache(maxsize=1)
@@ -448,6 +540,93 @@ def get_planet_details(planet_id):
     }
 
     return jsonify(details)
+
+
+@app.route("/api/council/respond", methods=["POST"])
+def council_respond():
+    """
+    Deterministic multi-agent style council response.
+    Produces structured recommendations without inventing scientific fields.
+    """
+    payload = request.get_json(silent=True) or {}
+    mode = str(payload.get("mode", "discovery")).lower()
+    player_goal = str(payload.get("player_goal", "explore promising targets"))
+    selected_planet_id = payload.get("selected_planet_id")
+    filters = payload.get("filters") or {}
+    challenge_state = payload.get("challenge_state") or {}
+    recent_actions = payload.get("recent_actions") or []
+
+    try:
+        objects = build_orbital_objects()
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load orbital catalog: {exc}"}), 500
+
+    ranked = rank_targets_for_context(objects, filters)
+    if not ranked:
+        return jsonify(
+            {
+                "mission_status": "insufficient_evidence",
+                "headline": "Council cannot rank targets under current filters",
+                "primary_recommendation": {
+                    "action": "widen_filters",
+                    "target_id": None,
+                    "reason": "Current radius/period constraints removed all candidates",
+                },
+                "council_votes": [],
+                "player_options": ["Widen radius band", "Increase period max", "Enable confirmed planets"],
+                "discovery_log_entry": "No candidates available under active constraints.",
+            }
+        )
+
+    primary = None
+    if selected_planet_id:
+        primary = next((planet for planet in ranked if planet.get("id") == selected_planet_id), None)
+    if primary is None:
+        primary = ranked[0]
+
+    votes = build_council_votes(primary, mode)
+    caution_votes = [vote for vote in votes if vote["stance"] == "caution"]
+    mission_status = "candidate_found" if not caution_votes else "candidate_with_risk"
+    recommendation_action = "targeted_scan" if mode in {"discovery", "sandbox"} else "deep_verification"
+    active_challenge = bool(challenge_state.get("active", False))
+
+    options = [
+        "Run targeted scan",
+        "Compare nearest analogs",
+        "Open full data dossier",
+    ]
+    if active_challenge:
+        options[0] = "Submit to challenge evaluator"
+
+    headline = f"Council ưu tiên {primary.get('id', 'unknown target')} cho bước kế tiếp"
+    if caution_votes:
+        headline += " (kèm cảnh báo khí hậu/quỹ đạo)"
+
+    return jsonify(
+        {
+            "mission_status": mission_status,
+            "headline": headline,
+            "primary_recommendation": {
+                "action": recommendation_action,
+                "target_id": primary.get("id"),
+                "reason": (
+                    f"Scored {primary.get('score', 0):.2f} on baseline habitability under goal '{player_goal}'."
+                ),
+            },
+            "council_votes": votes,
+            "player_options": options,
+            "discovery_log_entry": (
+                f"{primary.get('id')} promoted after council triage. Recent actions: {', '.join(recent_actions[-3:]) or 'n/a'}."
+            ),
+            "evidence_summary": {
+                "radius_earth": round(safe_float(primary.get("radius"), 0.0), 3),
+                "temp_k": round(safe_float(primary.get("temp"), 0.0), 2),
+                "insolation": round(safe_float(primary.get("insolation"), 0.0), 3),
+                "eccentricity": round(safe_float(primary.get("orbit", {}).get("eccentricity"), 0.0), 4),
+                "period_days": round(safe_float(primary.get("period"), 0.0), 2),
+            },
+        }
+    )
 
 
 @app.route("/<path:path>")
