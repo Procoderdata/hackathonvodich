@@ -136,6 +136,29 @@ sequenceDiagram
 
 ```mermaid
 graph TD
+    subgraph Frontend["Frontend (orrery_component/frontend)"]
+      A1["CommandCenterPage.jsx"]
+      A2["ConsolePanel.jsx"]
+      A3["MissionControl.jsx"]
+      A4["OrreryEngine.js"]
+    end
+
+    subgraph Backend["Backend (Flask server.py)"]
+      B1["GET /api/orbital-objects"]
+      B2["GET /api/planet/:id"]
+      B3["POST /api/council/respond"]
+      B4["Scoring + Ranking + Votes"]
+      B5["Cache loaders"]
+    end
+
+    subgraph Data["Data (data/)"]
+      C1["orbital_elements.csv"]
+      C2["orbital_elements.meta.json"]
+      C3["TOI/K2 CSV"]
+    end
+
+    subgraph Jobs["Jobs (scripts/)"]
+      D1["refresh_orbital_catalog.py"]
     subgraph Frontend [orrery_component/frontend]
       A1[CommandCenterPage.jsx]
       A2[ConsolePanel.jsx]

@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 import pandas as pd
+from council_orchestrator import generate_council_response
 
 app = Flask(__name__)
 CORS(app)
@@ -561,6 +562,7 @@ def council_respond():
     except Exception as exc:
         return jsonify({"error": f"Failed to load orbital catalog: {exc}"}), 500
 
+    return jsonify(generate_council_response(objects, payload))
     ranked = rank_targets_for_context(objects, filters)
     if not ranked:
         return jsonify(
