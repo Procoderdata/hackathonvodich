@@ -147,11 +147,11 @@ sequenceDiagram
     "periodMax": 500
   },
   "challenge_state": {
-    "active": true,
-    "objective": "Find 2 candidate worlds",
-    "progress": 1
+    "active": false,
+    "objective": "",
+    "progress": 0
   },
-  "recent_actions": ["spiral_scan", "open_planet_modal"]
+  "recent_actions": ["scan", "select"]
 }
 ```
 
