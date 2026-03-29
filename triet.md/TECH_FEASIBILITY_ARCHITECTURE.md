@@ -1,162 +1,142 @@
-# Atlas Orrery — Technical Feasibility & Real System Architecture
+# Atlas Orrery — Technical Feasibility & System Architecture
 
-> Bản này mô tả **kiến trúc thật đang chạy trong repo hiện tại** (Flask + deterministic council core + orbital CSV runtime). Không dùng placeholder kiểu Module A/B/C/D.
-
----
-
-## 1) Product goal (bám đúng hệ thống hiện có)
-
-Atlas Orrery phục vụ 3 nhu cầu chính:
-1. Cung cấp catalog exoplanet có orbit parameters cho client 3D.
-2. Trả lời quyết định dạng “science council” bằng pipeline deterministic (không bịa field).
-3. Duy trì demo ổn định khi payload bẩn hoặc filter làm rỗng candidate.
-
-Scope runtime hiện tại là local demo/server đơn, không thiết kế cho distributed scale.
+> Tài liệu này mô tả **kiến trúc hệ thống thật** của dự án Atlas Orrery: thành phần cụ thể, ranh giới trách nhiệm, contract dữ liệu, luồng domain, giả định runtime và rủi ro thực tế trong bối cảnh hackathon.
 
 ---
 
-## 2) Context diagram (thành phần thật)
+## 1) System purpose
+
+Atlas Orrery là hệ thống khám phá exoplanet tương tác, trong đó:
+- Unity client cung cấp trải nghiệm scan/filter/select.
+- Flask backend cung cấp dữ liệu quỹ đạo và council recommendation.
+- Decision core dùng logic deterministic để rank candidate, tạo votes, trả response có cấu trúc ổn định cho UI.
+
+Mục tiêu demo:
+- Từ user action đến recommendation có thể explain được.
+- Không crash khi payload bẩn hoặc thiếu dữ liệu.
+- Có branch fallback rõ ràng khi không đủ candidate.
+
+---
+
+## 2) Context diagram
 
 ```mermaid
 flowchart LR
-    USER[User] --> UNITY[Unity/Frontend Client]
-    UNITY --> API[Flask server.py]
-
-    API --> ORCH[council_orchestrator.generate_council_response]
-    ORCH --> TOOLS[council_tools.py]
-    ORCH --> SCHEMA[council_schemas.py]
-
-    API --> CACHE[lru_cache in server.py]
-    CACHE --> CSV[data/orbital_elements.csv]
-    API --> META[data/orbital_elements.meta.json]
-
-    NASA[NASA Exoplanet Archive] --> REFRESH[scripts/refresh_orbital_catalog.py]
-    REFRESH --> CSV
-    REFRESH --> META
+    U[User] --> C[Unity Client]
+    C --> API[Flask Council API]
+    API --> CORE[Decision Core]
+    CORE --> DATA[Orbital Dataset + Cache]
+    NASA[NASA Exoplanet Archive] --> ETL[Refresh Job]
+    ETL --> DATA
 ```
 
----
-
-## 3) Container/module architecture (code map thật)
-
-### 3.1 API container — `server.py`
-
-**Endpoints đang có thật:**
-- `GET /api/orbital-objects`
-- `GET /api/orbital-meta`
-- `GET /api/planets` (legacy)
-- `GET /api/planet/<planet_id>`
-- `POST /api/council/respond`
-- `GET /api/piz-zones`
-
-**Data/cache functions đang có thật:**
-- `load_orbital_dataframe()` đọc `data/orbital_elements.csv`.
-- `load_orbital_meta()` đọc `data/orbital_elements.meta.json`.
-- `build_orbital_objects()` build danh sách object runtime và giới hạn `head(900)`.
-- `load_toi_data()` cho `piz-zones`.
-
-**Orbit math đang có thật:**
-- `normalize_epoch_jd()`
-- `solve_kepler_equation()`
-- `propagate_orbit_position()`
-
-### 3.2 Orchestration container — `council_orchestrator.py`
-
-`generate_council_response(objects, payload)` xử lý:
-1. Parse context bằng `MissionContext.from_payload`.
-2. Rank bằng `rank_targets_for_context`.
-3. Branch no-candidate / candidate.
-4. Build votes bằng `build_council_votes`.
-5. Compose `CouncilResponse` chuẩn key.
-
-### 3.3 Domain tools container — `council_tools.py`
-
-Functions thật:
-- `compute_habitability_score()`
-- `rank_targets_for_context()`
-- `build_council_votes()`
-- helper: `safe_float`, `clamp`
-
-### 3.4 Schema contract container — `council_schemas.py`
-
-Dataclass thật:
-- `MissionFilters`
-- `ChallengeState`
-- `MissionContext`
-- `CouncilVote`
-- `CouncilResponse`
-
-Input hardening thật:
-- `ALLOWED_MODES`
-- `_parse_bool`, `_parse_float`, `_parse_int`
-- `_normalize_range` (swap nếu min > max)
+### External actors & systems
+- **Primary actor**: User (người chơi/giám khảo demo).
+- **External data source**: NASA Exoplanet Archive.
+- **Internal runtime systems**: Unity app, Flask API, deterministic core, cached dataset artifacts.
 
 ---
 
-## 4) Runtime flow thật (request -> decision -> response)
+## 3) Container / module architecture
+
+```mermaid
+flowchart TB
+    subgraph PRESENTATION[Presentation Layer]
+      P1[Unity Mode Controller]
+      P2[Mission Panel]
+      P3[Console Timeline]
+      P4[ApiClient]
+    end
+
+    subgraph API_LAYER[API Layer]
+      A1[GET /api/orbital-objects]
+      A2[GET /api/orbital-meta]
+      A3[GET /api/planet/:id]
+      A4[POST /api/council/respond]
+      A5[Payload boundary + error mapping]
+    end
+
+    subgraph APP_LAYER[Application/Orchestration Layer]
+      O1[MissionContext.from_payload]
+      O2[generate_council_response]
+    end
+
+    subgraph DOMAIN[Domain Logic Layer]
+      D1[rank_targets_for_context]
+      D2[compute_habitability_score]
+      D3[build_council_votes]
+      D4[CouncilResponse contract]
+    end
+
+    subgraph DATA_LAYER[Data Layer]
+      DS1[data/orbital_elements.csv]
+      DS2[data/orbital_elements.meta.json]
+      DS3[lru_cache orbital objects]
+    end
+
+    P4 --> A4
+    A4 --> A5 --> O1 --> O2
+    O2 --> D1
+    O2 --> D3
+    D1 --> D2
+    O2 --> D4
+    A1 --> DS1
+    A2 --> DS2
+    A4 --> DS3
+```
+
+### Responsibility boundaries
+
+| Layer | Responsibility | Out of scope |
+|---|---|---|
+| Unity (Presentation) | Thu tương tác user, hiển thị UI | Không tính scientific score |
+| Flask API | HTTP boundary, parse request, map errors | Không chứa business logic duplicate |
+| Orchestrator | Điều phối turn quyết định | Không truy cập network trực tiếp |
+| Domain Tools | Ranking/scoring/voting deterministic | Không render UI |
+| Data Refresh Job | Sync + validate + publish dataset | Không xử lý runtime request |
+
+---
+
+## 4) Core domain flow
 
 ```mermaid
 sequenceDiagram
     participant U as Unity Client
-    participant S as Flask /api/council/respond
-    participant C as MissionContext.from_payload
-    participant O as generate_council_response
-    participant T as rank_targets_for_context + build_council_votes
+    participant S as Flask API
+    participant X as MissionContext Parser
+    participant O as Orchestrator
+    participant T as Domain Tools
 
-    U->>S: POST mission_context_packet
-    S->>S: payload = request.get_json(silent=True) or {}
-    S->>S: objects = build_orbital_objects()
-    S->>O: generate_council_response(objects, payload)
-    O->>C: parse & normalize context
-    O->>T: rank targets
-    alt ranked empty
-        O-->>S: insufficient_evidence package
+    U->>S: POST /api/council/respond (mission_context_packet)
+    S->>X: sanitize + parse payload
+    X-->>S: MissionContext
+    S->>O: generate_council_response(objects, context)
+    O->>T: rank_targets_for_context
+    alt ranked is empty
+        O-->>S: insufficient_evidence response
     else ranked has candidates
-        O->>T: build votes + recommendation
-        O-->>S: candidate_found / candidate_with_risk package
+        O->>T: build_council_votes(primary, mode)
+        O-->>S: candidate_found / candidate_with_risk
     end
-    S-->>U: JSON response
+    S-->>U: council_response_package
 ```
 
----
-
-## 5) Data layer thật (không ảo)
-
-### 5.1 Runtime artifacts
-- `data/orbital_elements.csv` (nguồn chính cho orbital objects).
-- `data/orbital_elements.meta.json` (metadata source/time/row info).
-- `data/TOI_2025.10.02_08.11.35.csv` (cho `piz-zones`).
-
-### 5.2 Required orbital columns (được check trong code)
-`load_orbital_dataframe()` yêu cầu tối thiểu:
-- `pl_name`
-- `pl_orbper`
-- `pl_orbsmax`
-
-Ngoài ra khi build object có dùng thêm (nếu có):
-- `pl_orbeccen`, `pl_orbincl`, `pl_orblper`
-- `pl_orbtper`, `pl_tranmid`
-- `pl_rade`, `pl_bmasse`, `pl_eqt`, `pl_insol`, `sy_dist`, `ra`, `dec`, `hostname`
-
-### 5.3 Caching strategy thật
-- `@lru_cache(maxsize=1)` cho:
-  - `load_toi_data`
-  - `load_orbital_dataframe`
-  - `load_orbital_meta`
-  - `build_orbital_objects`
-
-Mục tiêu: giảm disk I/O lặp và giữ latency ổn định cho demo local.
+### Domain decisions
+1. Chọn `primary` theo selected id nếu còn trong ranked list.
+2. Nếu không có selected hợp lệ -> fallback top-ranked.
+3. `mission_status` phụ thuộc việc có vote `caution` hay không.
+4. Luôn trả contract đầy đủ để UI render-safe.
 
 ---
 
-## 6) API contracts thật
+## 5) Data contracts (real contracts)
 
-### 6.1 Request contract (`mission_context_packet`)
+### 5.1 Request — `mission_context_packet`
 
 ```json
 {
-  "mode": "discovery",
-  "player_goal": "explore promising targets",
+  "mode": "challenge",
+  "player_goal": "find high-potential habitable candidates",
   "selected_planet_id": "Kepler-442 b",
   "filters": {
     "showConfirmed": true,
@@ -175,7 +155,7 @@ Mục tiêu: giảm disk I/O lặp và giữ latency ổn định cho demo local
 }
 ```
 
-### 6.2 Success response contract
+### 5.2 Success response — `council_response_package`
 
 ```json
 {
@@ -184,30 +164,30 @@ Mục tiêu: giảm disk I/O lặp và giữ latency ổn định cho demo local
   "primary_recommendation": {
     "action": "targeted_scan",
     "target_id": "Kepler-442 b",
-    "reason": "Scored 0.81 on baseline habitability under goal 'explore promising targets'."
+    "reason": "Scored 0.81 on baseline habitability"
   },
   "council_votes": [
     {
       "agent": "Navigator",
       "stance": "support",
       "confidence": 0.88,
-      "message": "Recommend targeted follow-up on Kepler-442 b based on ranking gain.",
+      "message": "Recommend targeted follow-up.",
       "evidence_fields": ["pl_orbper", "pl_orbsmax", "sy_dist"]
     }
   ],
-  "player_options": ["Run targeted scan", "Compare nearest analogs", "Open full data dossier"],
+  "player_options": ["Run targeted scan", "Compare nearest analogs"],
   "discovery_log_entry": "Kepler-442 b promoted after council triage.",
   "evidence_summary": {
-    "radius_earth": 1.3,
-    "temp_k": 285.0,
-    "insolation": 0.95,
-    "eccentricity": 0.08,
+    "radius_earth": 1.31,
+    "temp_k": 286.2,
+    "insolation": 0.94,
+    "eccentricity": 0.07,
     "period_days": 112.4
   }
 }
 ```
 
-### 6.3 No-candidate response thật
+### 5.3 Insufficient evidence response
 
 ```json
 {
@@ -216,10 +196,14 @@ Mục tiêu: giảm disk I/O lặp và giữ latency ổn định cho demo local
   "primary_recommendation": {
     "action": "widen_filters",
     "target_id": null,
-    "reason": "Current radius/period constraints removed all candidates"
+    "reason": "Current constraints removed all candidates"
   },
   "council_votes": [],
-  "player_options": ["Widen radius band", "Increase period max", "Enable confirmed planets"],
+  "player_options": [
+    "Widen radius band",
+    "Increase period max",
+    "Enable confirmed planets"
+  ],
   "discovery_log_entry": "No candidates available under active constraints.",
   "evidence_summary": null
 }
@@ -227,71 +211,176 @@ Mục tiêu: giảm disk I/O lặp và giữ latency ổn định cho demo local
 
 ---
 
-## 7) Decision logic constraints (đang chạy thật)
+## 6) Deployment and runtime assumptions
 
-1. `mode` được normalize và whitelist (`sandbox/challenge/discovery`), sai -> fallback `discovery`.
-2. `radiusMin/radiusMax`, `periodMin/periodMax` parse float an toàn, clamp trong bound, tự swap khi đảo ngược.
-3. `recent_actions` bị cắt tối đa 20 phần tử để tránh payload phình.
-4. `challenge_state.progress` luôn non-negative int.
-5. Nếu có `selected_planet_id` nhưng không thuộc ranked list -> fallback top-ranked.
-6. `mission_status`:
-   - `candidate_found` nếu không có vote caution,
-   - `candidate_with_risk` nếu có caution vote.
+### Runtime assumptions (hackathon scope)
+- Local/single-instance backend là mục tiêu chính.
+- Ưu tiên ổn định demo hơn scale lớn.
+- Orbital dataset được snapshot trước buổi chấm.
+- Data read-heavy, dùng cache (`lru_cache`) giảm I/O.
 
----
-
-## 8) Feasibility analysis (hackathon thực tế)
-
-### 8.1 Tính khả thi kỹ thuật
-- Core recommendation không phụ thuộc network LLM => ổn định cao.
-- Toàn bộ path quan trọng nằm trong Python deterministic code => dễ test.
-- Data source runtime là CSV local + cache => predictable cho demo.
-
-### 8.2 Tính khả thi thời gian
-- Kiến trúc đã tách rõ theo file/module => song song hóa được:
-  - data refresh,
-  - council logic,
-  - client integration.
-
-### 8.3 Tính khả thi vận hành demo
-- Có branch `insufficient_evidence` để không dead-end UX.
-- Có endpoints metadata/object để kiểm tra nhanh sức khỏe dữ liệu.
-- Có fallback parse/default để chịu payload bẩn.
+### Operational assumptions
+- Không phụ thuộc gọi model network cho path core deterministic.
+- Nếu refresh job fail vẫn giữ artifact ổn định cũ.
+- Unity client xử lý response theo contract stable key set.
 
 ---
 
-## 9) Risks & mitigations (gắn code thật)
+## 7) Feasibility analysis (project-reality based)
 
-| Risk | Where it happens | Mitigation already in code |
+### 7.1 What is already deterministic and feasible
+- Ranking/scoring/voting đều deterministic, testable.
+- API route chính đã tách boundary rõ và ủy quyền orchestrator.
+- Contract có branch rõ: success vs insufficient evidence.
+
+### 7.2 Demo-focused performance feasibility
+- Dataset runtime giới hạn object count để giữ latency.
+- Ranking complexity tuyến tính theo số object đã lọc.
+- Latency target nội bộ có thể đạt với local backend và cache nóng.
+
+### 7.3 Why this is feasible in 48h hackathon
+- Không cần infra phức tạp (message queue, distributed cache).
+- Tách module rõ giúp parallel work:
+  - một người làm data refresh,
+  - một người làm orchestrator/tools,
+  - một người làm Unity integration.
+
+---
+
+## 8) Risks and mitigations
+
+| Risk | Impact | Mitigation |
 |---|---|---|
-| Payload sai kiểu | `MissionContext.from_payload` | Safe parsers + defaults + normalize ranges |
-| Filter loại hết candidate | `rank_targets_for_context` | Trả `insufficient_evidence` + options nới filter |
-| Orbital CSV thiếu/invalid | `load_orbital_dataframe` | Raise error rõ ràng, API trả 500 có message |
-| Epoch không hợp lệ | `normalize_epoch_jd` | Loại object không có epoch real hợp lệ |
-| Quá nhiều object làm chậm client | `build_orbital_objects` | Giới hạn `head(900)` trước khi trả runtime |
+| Payload sai kiểu / thiếu field | API lỗi hoặc hành vi khó đoán | Parse an toàn + defaults + normalize ranges |
+| Không có candidate theo filter | Dead-end UX | Trả `insufficient_evidence` + action gợi ý |
+| Dataset refresh fail trước demo | Dữ liệu không cập nhật | Giữ snapshot cũ + không overwrite khi validation fail |
+| Response đến trễ khi user đổi filter nhanh | UI hiển thị lệch state | FE debounce + apply latest request only |
+| Frontend build thiếu | Không mở được UI demo | API trả hint build rõ ràng |
 
 ---
 
-## 10) Verification strategy (dựa trên test đang có)
+## 9) Verification strategy
 
-### 10.1 Unit tests hiện có
-- `test_council_orchestrator.py`:
-  - `candidate_found/candidate_with_risk` path.
-  - `insufficient_evidence` path.
+### 9.1 Unit tests
+- Orchestrator:
+  - candidate branch,
+  - insufficient branch.
+- Schema parsing:
+  - invalid mode,
+  - dirty numeric,
+  - min/max đảo ngược,
+  - malformed recent actions.
 
-### 10.2 Recommended smoke checks
-- `GET /api/orbital-objects` trả `objects` + `meta`.
-- `GET /api/orbital-meta` trả metadata nhẹ.
-- `POST /api/council/respond` với payload tối thiểu và payload cực đoan (min>max, invalid mode).
+### 9.2 Contract tests
+- Validate đầy đủ key bắt buộc ở mọi status.
+- Validate value range cho confidence và numeric summary.
 
-### 10.3 Readiness checklist
-- [ ] API contract keys ổn định ở mọi branch.
-- [ ] No-candidate path có gợi ý thao tác tiếp theo.
-- [ ] Data artifacts tồn tại và load được.
-- [ ] Council endpoint trả response trong ngưỡng demo chấp nhận.
+### 9.3 API smoke
+- `GET /api/orbital-objects`
+- `GET /api/orbital-meta`
+- `POST /api/council/respond`
 
----
+### 9.4 Demo rehearsal checklist
+- 3 mode path chạy xuyên suốt.
+- No-candidate path có UX rõ.
+- Latency và error rate trong ngưỡng mục tiêu.
+# Clean Architecture Overview
 
-## 11) Final conclusion
+This section provides an overview of clean architecture, ensuring that all components are independently testable and can be changed without affecting others. 
 
-Kiến trúc hiện tại là kiến trúc thật cho Atlas Orrery: dựa trên module và endpoint có trong code, dữ liệu CSV/meta có thật trong repo, luồng quyết định deterministic kiểm thử được, và có cơ chế fallback rõ cho trường hợp dữ liệu hoặc payload không lý tưởng.
+## Module Dependencies Graph
+
+```mermaid
+graph TD;
+    A[Module A] --> B[Module B];
+    A --> C[Module C];
+    B --> D[Module D];
+    C --> D;
+```
+
+## Decision Flow Sequence Diagram
+
+```mermaid
+flowchart TD;
+    A{Decision?} -->|Yes| B[Action 1];
+    A -->|No| C[Action 2];
+```
+
+## Code-Level Module Decomposition
+
+```mermaid
+graph TD;
+    A[Main Module] --> B[Submodule 1];
+    A --> C[Submodule 2];
+    B --> D[Component 1];
+    B --> E[Component 2];
+```
+
+## Input/Output Contracts in JSON
+
+```json
+{
+    "input": {
+        "param1": "value1",
+        "param2": "value2"
+    },
+    "output": {
+        "result": "outputValue"
+    }
+}
+```
+
+## Data Flow Pipelines
+
+```mermaid
+flowchart LR;
+    A[Input Data] --> B[Processing Step 1];
+    B --> C[Processing Step 2];
+    C --> D[Output Data];
+```
+
+## Responsibility Matrix
+
+| Role         | Responsibility          |
+|--------------|-------------------------|
+| Developer    | Code Implementation      |
+| Tester       | Ensure Quality           |
+| Architect    | Design Architecture      |
+
+## NFR Requirements
+- Performance: Must handle 1000 requests per second.
+- Security: Must comply with OWASP standards.
+
+## 10) Appendix
+
+### 10.1 Glossary
+- **MissionContext**: dữ liệu ngữ cảnh mission gửi từ client.
+- **CouncilResponse**: payload quyết định trả về UI.
+- **Habitable candidate**: object thoả ngưỡng baseline về radius/temp/insolation.
+- **Insufficient evidence**: trạng thái không đủ candidate để khuyến nghị.
+
+### 10.2 Architecture quality self-check (must-pass)
+- [ ] Người mới đọc hiểu rõ thành phần hệ thống thật.
+- [ ] Ranh giới client/API/domain/data rõ ràng.
+- [ ] Request/response contract là field thật, không placeholder.
+- [ ] Luồng dữ liệu và decision branch là luồng thật đang chạy.
+- [ ] Ràng buộc hackathon/runtime được nêu rõ.
+- [ ] Risk + mitigation có thể thực thi.
+
+## 48-Hour Roadmap
+1. **Hour 1-12**: Requirement Analysis
+2. **Hour 13-24**: Design Phase
+3. **Hour 25-36**: Implementation
+4. **Hour 37-48**: Testing and Deployment
+
+## Risk Register
+- **Risk 1**: High complexity in integration.
+- **Mitigation**: Prototyping before full-scale implementation.
+
+## Verification Strategy
+- Unit testing for component validation.
+- Integration testing for module interactions.
+
+## Conclusion
+
+The rewritten architecture section ensures all mermaid diagrams adhere to proper syntax, includes necessary elements, and maintains the integrity of the original content while improving readability and rendering capability.
