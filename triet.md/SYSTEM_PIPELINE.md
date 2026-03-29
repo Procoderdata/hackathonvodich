@@ -1,152 +1,218 @@
-# Atlas Orrery — System Pipeline (Submission-ready)
+# Atlas Orrery — System Pipeline (Detailed v2)
 
-> File này chỉ tập trung vào pipeline thực thi: data refresh, runtime decision loop, UI update, test/release.
+> Mục tiêu: mô tả **end-to-end pipeline** ở mức có thể implement ngay, gồm runtime flow, data refresh, resilience, QA gate và release.
 
 ---
 
-## 1) Pipeline A — Data refresh (offline)
+## 0) Pipeline map (toàn cục)
 
 ```mermaid
-flowchart LR
-    T[Trigger: schedule or manual] --> E[Extract NASA archive]
-    E --> N[Normalize columns]
-    N --> V[Validate required fields]
-    V -->|pass| W1[Write orbital_elements.csv]
-    V -->|pass| W2[Write orbital_elements.meta.json]
-    V -->|fail| F[Keep previous dataset]
-    W1 --> C[Warm runtime cache]
-    W2 --> C
+flowchart TB
+    subgraph OFFLINE[Offline Pipelines]
+      A1[Schedule Trigger] --> A2[Extract NASA pscomppars]
+      A2 --> A3[Transform + Normalize]
+      A3 --> A4[Schema Validation]
+      A4 --> A5[Write CSV + meta.json]
+      A5 --> A6[Warm API cache]
+    end
+
+    subgraph ONLINE[Online Runtime]
+      B1[Unity user action] --> B2[mission_context_packet]
+      B2 --> B3[POST /api/council/respond]
+      B3 --> B4[Context parse + sanitize]
+      B4 --> B5[rank_targets_for_context]
+      B5 --> B6{Have candidates?}
+      B6 -- No --> B7[insufficient_evidence response]
+      B6 -- Yes --> B8[Build council votes + summary]
+      B8 --> B9[council_response_package]
+      B7 --> B9
+      B9 --> B10[UI render + next actions]
+    end
+
+    subgraph OPS[Quality Gates]
+      C1[Unit tests] --> C2[API smoke tests]
+      C2 --> C3[Contract checks]
+      C3 --> C4[Demo rehearsal]
+    end
 ```
-
-### Input
-- Raw rows từ NASA Exoplanet Archive.
-
-### Output
-- `data/orbital_elements.csv`
-- `data/orbital_elements.meta.json`
-
-### Failure behavior
-- Validation fail -> không overwrite dataset cũ.
-- Runtime API vẫn dùng dataset/cached version trước.
 
 ---
 
-## 2) Pipeline B — User interaction to council response (online)
+## 1) Offline data refresh pipeline (T-1 trước demo)
 
-```mermaid
-flowchart LR
-    U[User action: scan/filter/select] --> FE[Frontend state aggregation]
-    FE --> P[Build mission_context_packet]
-    P --> API[POST /api/council/respond]
-    API --> OR[Orchestrator parse and policy]
-    OR --> TL1[rank_targets_for_context]
-    OR --> TL2[compute_habitability_score]
-    OR --> TL3[build_council_votes]
-    TL1 --> OR
-    TL2 --> OR
-    TL3 --> OR
-    OR --> R[council_response_package]
-    R --> UI[Console + recommendation + options]
-    UI --> U
-```
+### 1.1 Trigger và lịch
+- Trigger định kỳ: mỗi 12h hoặc theo tay trước buổi chấm.
+- Manual trigger: cho phép chạy nóng khi cần cập nhật catalog.
 
-### Step-by-step execution
-1. FE bắt event từ scan/filter/selection.
-2. FE gom state thành `mission_context_packet`.
-3. API validate payload.
-4. Orchestrator gọi tools deterministic.
-5. Nếu không có candidate -> trả `insufficient_evidence`.
-6. Nếu có candidate -> build votes + recommendation.
-7. Trả response có cấu trúc ổn định.
-8. FE render headline, votes, options cho vòng tiếp theo.
+### 1.2 Các stage chi tiết
+1. **Extract**
+   - Nguồn: NASA Exoplanet Archive (pscomppars).
+   - Lấy các field bắt buộc: `pl_name`, `pl_orbper`, `pl_orbsmax`, `pl_orbeccen`, `pl_orbtper`, `pl_tranmid`, `pl_rade`, `pl_eqt`, `pl_insol`, `sy_dist`.
+2. **Transform / Normalize**
+   - Chuẩn hóa số (`float`) cho các cột orbit/science.
+   - Chuẩn hóa epoch về Julian Day (`normalize_epoch_jd`).
+   - Loại bỏ bản ghi không có `pl_orbper` hoặc `pl_orbsmax`.
+3. **Validate**
+   - Required columns phải đủ.
+   - Dataset không rỗng.
+   - Tỷ lệ epoch hợp lệ > ngưỡng tối thiểu (ví dụ 5%).
+4. **Publish artifact**
+   - Ghi `data/orbital_elements.csv`.
+   - Ghi `data/orbital_elements.meta.json` (source, refreshed_at_utc, row_count, checksum).
+5. **Warm cache**
+   - Reload cache của Flask (`build_orbital_objects`) trước khi traffic thật.
+
+### 1.3 Failure handling
+- Nếu validation fail: **không overwrite** dataset hiện tại.
+- Ghi log lỗi + giữ phiên bản cũ đang ổn định.
+- Cảnh báo dashboard nhưng runtime vẫn hoạt động với cache/dataset trước đó.
 
 ---
 
-## 3) Pipeline C — Council branching logic
+## 2) Runtime decision pipeline (user action -> council response)
+
+### 2.1 Event ingress
+- User đổi filter, chọn planet, hoặc bấm action trong Unity.
+- FE tạo `mission_context_packet` chứa mode, filters, selected id, recent actions.
+
+### 2.2 API boundary
+- Endpoint: `POST /api/council/respond`.
+- Bắt buộc parse JSON an toàn (`silent=True`) + fallback payload rỗng.
+- Sanitize input:
+  - mode về lower-case và whitelist (`sandbox/challenge/discovery`).
+  - numeric filter parse an toàn (không crash khi input bẩn).
+  - giới hạn độ dài `recent_actions` để giữ payload nhỏ.
+
+### 2.3 Orchestrator flow
+1. `MissionContext.from_payload(payload)`
+2. `rank_targets_for_context(objects, filters)`
+3. Branch:
+   - **No candidates** -> `mission_status=insufficient_evidence` + options nới filter.
+   - **Has candidates** -> chọn `primary` theo selected id hoặc top-1 score.
+4. `build_council_votes(primary, mode)`
+5. Compose `CouncilResponse` có:
+   - headline
+   - primary_recommendation
+   - council_votes
+   - player_options
+   - evidence_summary
+
+### 2.4 Latency budget mục tiêu (local demo)
+- Parse + validate context: < 30ms
+- Rank targets (<=900 objects): < 120ms
+- Compose response: < 20ms
+- Tổng `p95 /api/council/respond`: < 1200ms
+
+---
+
+## 3) Detailed branch logic
 
 ```mermaid
 flowchart TD
-    A[Input payload + objects] --> B[Normalize mission context]
-    B --> C[Rank candidates by filters]
-    C --> D{Candidates empty?}
-    D -->|Yes| E[Return insufficient_evidence package]
-    D -->|No| F[Pick primary target]
-    F --> G[Build per-agent votes]
-    G --> H[Compose recommendation and evidence summary]
-    H --> I[Return council_response_package]
+    S1[Input payload] --> S2[MissionContext.from_payload]
+    S2 --> S3[Apply filters]
+    S3 --> S4{ranked empty?}
+
+    S4 -- Yes --> N1[mission_status: insufficient_evidence]
+    N1 --> N2[action: widen_filters]
+    N2 --> N3[options: widen radius / period / show confirmed]
+
+    S4 -- No --> P1[primary = selected if exists else top-ranked]
+    P1 --> P2[build_council_votes]
+    P2 --> P3{any caution vote?}
+    P3 -- Yes --> P4[mission_status: candidate_with_risk]
+    P3 -- No --> P5[mission_status: candidate_found]
+    P4 --> P6[compose CouncilResponse]
+    P5 --> P6
+    N3 --> P6
 ```
 
 ---
 
-## 4) Pipeline D — UI update
+## 4) API contract pipeline checks
 
-```mermaid
-sequenceDiagram
-    participant FE as Unity UI
-    participant API as Flask Council API
-    participant Panel as Mission and Console Panels
+### 4.1 Request checks
+- `mode`: chỉ chấp nhận `sandbox`, `challenge`, `discovery`.
+- `filters`: auto-clamp nếu min > max.
+- `challenge_state.progress`: ép kiểu int an toàn.
+- `recent_actions`: list[str], tối đa 20 events gần nhất.
 
-    FE->>API: POST mission_context_packet
-    API-->>FE: council_response_package
-    FE->>Panel: render headline
-    FE->>Panel: render recommendation
-    FE->>Panel: render votes (support/caution)
+### 4.2 Response checks
+- Luôn có key ổn định:
+  - `mission_status`, `headline`, `primary_recommendation`, `council_votes`, `player_options`, `discovery_log_entry`.
+- Branch `insufficient_evidence` vẫn trả đầy đủ contract.
+- `confidence` trong vote được clamp về [0.1, 0.99].
+
+---
+
+## 5) UI rendering pipeline
+
+### 5.1 Mapping policy
+- `headline` -> mission panel title.
+- `primary_recommendation.action` -> action button chính.
+- `council_votes` -> console timeline.
+
+### 5.2 State consistency
+- FE dùng `request_id`/timestamp để bỏ response cũ đến muộn.
+- Debounce input filter 200-300ms để tránh spam API.
+
+### 5.3 Error UX
+- API fail -> hiển thị fallback card + nút retry.
+- `insufficient_evidence` -> gợi ý thao tác cụ thể để user thoát dead-end.
+
+---
+
+## 6) Observability pipeline
+
+Mỗi request log tối thiểu:
+- `request_id`
+- `mode`
+- `selected_planet_id`
+- `candidate_count`
+- `latency_ms`
+- `mission_status`
+
+Gợi ý log format (JSON line):
+```json
+{
+  "request_id": "a2f4...",
+  "mode": "challenge",
+  "candidate_count": 18,
+  "mission_status": "candidate_with_risk",
+  "latency_ms": 143
+}
 ```
 
-UI policy:
-- `command` cho headline chính.
-- `info` cho support votes.
-- `warning` cho caution votes.
+---
+
+## 7) Quality gate pipeline
+
+1. **Unit test**
+   - Orchestrator branch test (`candidate_found`, `insufficient_evidence`).
+   - Schema parse test với input bẩn.
+2. **API smoke**
+   - `/api/orbital-objects`, `/api/orbital-meta`, `/api/council/respond`.
+3. **Contract test**
+   - Assert key bắt buộc không bị thiếu.
+4. **Demo rehearsal**
+   - 1 flow đầy đủ: scan -> select -> council -> follow-up.
 
 ---
 
-## 5) Pipeline E — Quality and release gate
+## 8) Release/rollback pipeline
 
-```mermaid
-flowchart LR
-    C1[Code change] --> C2[Unit tests: tools and orchestrator]
-    C2 --> C3[API smoke: /api/council/respond]
-    C3 --> C4[Client smoke: scan/filter/select flow]
-    C4 --> C5[Build check]
-    C5 --> C6[Demo rehearsal]
-```
-
-Minimum gates:
-- Unit tests pass.
-- Response contract keys luôn đủ.
-- `insufficient_evidence` branch không lỗi.
-- Client render được support + caution logs.
+- Trước release: tag build + snapshot dataset meta.
+- Nếu lỗi runtime sau deploy:
+  1. rollback frontend bundle,
+  2. rollback backend commit,
+  3. restore dataset snapshot gần nhất.
 
 ---
 
-## 6) Pipeline SLO targets (demo)
+## 9) Definition of done (expanded)
 
-- Council response p95 < 1200ms (local env).
-- UI update after response < 200ms.
-- Council endpoint error rate < 1% trong demo session.
-
----
-
-## 7) Pipeline risk controls
-
-1. Spam request khi đổi filter liên tục
-- FE debounce + loading guard.
-
-2. Response đến muộn làm lệch state
-- Chỉ apply response mới nhất theo `request_id`/timestamp.
-
-3. Candidate rỗng gây dead-end UX
-- Trả gợi ý tự động: widen filters hoặc compare analogs.
-
-4. Model provider lỗi trong lúc demo
-- Fallback chain: `Grok -> DeepSeek -> Qwen`.
-- Nếu lỗi toàn bộ -> deterministic fallback response.
-
----
-
-## 8) Definition of done (MVP)
-
-- [ ] Hoàn thành 1 vòng user-action -> council-response -> UI-update ổn định.
-- [ ] Có nhánh xử lý lỗi và thiếu dữ liệu.
-- [ ] Có log đủ để debug realtime demo.
-- [ ] Chạy được đầy đủ trong 3 mode: Sandbox, Challenge, Discovery.
+- [ ] Hoàn thành end-to-end flow ổn định trong cả 3 mode.
+- [ ] Không crash khi payload thiếu/sai kiểu.
+- [ ] Có nhánh xử lý no-candidate rõ ràng cho UX.
+- [ ] Contract response ổn định để frontend render an toàn.
+- [ ] Unit test cho cả happy path + failure path đều pass.
