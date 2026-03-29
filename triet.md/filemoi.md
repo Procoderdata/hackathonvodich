@@ -1,34 +1,32 @@
-# Atlas Orrery - Technical Architecture (Project Architecture)
+# Atlas Orrery - Technical Architecture
 
-> Tài liệu này chỉ mô tả kiến trúc hệ thống và ranh giới module. Pipeline vận hành được tách riêng trong `SYSTEM_PIPELINE.md`.
+> Tài liệu này mô tả kiến trúc kỹ thuật và ranh giới module của Atlas Orrery. Pipeline vận hành (data refresh, runtime loop, quality gates, rollback) được tách riêng trong `SYSTEM_PIPELINE.md`.
 
----
-
-## 1) Kiến trúc tổng thể
+## 1) System architecture overview
 
 ```mermaid
 flowchart TB
-    subgraph CLIENT[Client Layer - Unity]
-      U1[ModeController]
-      U2[MissionPanelController]
-      U3[ConsoleController]
-      U4[ApiClient]
-      U5[Local session state]
+    subgraph CLIENT[Unity Client]
+      MC[ModeController]
+      MP[MissionPanelController]
+      CC[ConsoleController]
+      AC[ApiClient]
+      LS[Local session state]
     end
 
-    subgraph API[Backend API Layer - Flask]
-      A1[POST /api/council/respond]
-      A2[GET /api/orbital-objects]
-      A3[GET /api/orbital-meta]
-      A4[GET /api/planets]
-      A5[GET /api/planet/<planet_id>]
-      A6[GET /api/piz-zones]
+    subgraph API[Flask API]
+      R1[POST /api/council/respond]
+      R2[GET /api/orbital-objects]
+      R3[GET /api/orbital-meta]
+      R4[GET /api/planets]
+      R5[GET /api/planet/<planet_id>]
+      R6[GET /api/piz-zones]
     end
 
-    subgraph CORE[Decision Core - Deterministic]
-      C1[council_orchestrator.py]
-      C2[council_tools.py]
-      C3[council_schemas.py]
+    subgraph CORE[Deterministic Decision Core]
+      O[council_orchestrator.py]
+      T[council_tools.py]
+      S[council_schemas.py]
     end
 
     subgraph DATA[Data Layer]
@@ -38,119 +36,140 @@ flowchart TB
     end
 
     subgraph OPS[DataOps]
-      E1[scripts/refresh_orbital_catalog.py]
-      E2[scripts/install_nightly_refresh_launchd.py]
-      E3[logs/orbital_refresh.*.log]
+      X1[scripts/refresh_orbital_catalog.py]
+      X2[scripts/install_nightly_refresh_launchd.py]
+      X3[logs/orbital_refresh.*.log]
     end
 
-    U4 --> A1
-    U4 --> A2
-    U4 --> A3
-    U4 --> A4
-    U4 --> A5
-    U4 --> A6
+    AC --> R1
+    AC --> R2
+    AC --> R3
+    AC --> R4
+    AC --> R5
+    AC --> R6
 
-    A1 --> C1
-    C1 --> C2
-    C1 --> C3
+    R1 --> O
+    O --> T
+    O --> S
 
-    A2 --> D1
-    A3 --> D2
-    A4 --> D1
-    A5 --> D1
-    A6 --> D3
+    R2 --> D1
+    R3 --> D2
+    R4 --> D1
+    R5 --> D1
+    R6 --> D3
 
-    E1 --> D1
-    E1 --> D2
-    E2 --> E1
-    E2 --> E3
+    X1 --> D1
+    X1 --> D2
+    X2 --> X1
+    X2 --> X3
 ```
 
----
+Hệ thống tách rõ ba lớp runtime: Unity điều khiển interaction và render, Flask cung cấp HTTP boundary, deterministic core xử lý decision logic dựa trên catalog dữ liệu đã được refresh trước đó.
 
-## 2) Kiến trúc runtime
+## 2) Runtime architecture
 
-### 2.1 Client (Unity)
-- Trách nhiệm:
-- Thu user action và state hiện tại (mode/filter/selection).
-- Gọi API và render `council_response_package`.
+### Client
+- `ModeController`: quản lý mode `sandbox/challenge/discovery`.
+- `MissionPanelController`: render `headline`, `primary_recommendation`, `player_options`.
+- `ConsoleController`: render `council_votes`, trạng thái mission, cảnh báo.
+- `ApiClient`: gọi API, xử lý timeout/retry nhẹ ở mức client.
+- Local session state: giữ context hiện tại cho lần request kế tiếp.
 
-- Không làm:
-- Không tự tính habitability score.
-- Không tự tạo scientific facts mới.
+### Backend API
+- Flask routes là request boundary duy nhất giữa Unity và decision core.
+- `POST /api/council/respond` là main decision entrypoint.
+- Catalog routes trả dữ liệu quỹ đạo/metadata/detail theo nhu cầu UI, không chứa decision synthesis.
 
-### 2.2 Backend API (Flask)
-- Trách nhiệm:
-- HTTP boundary, input parse/sanitize, trả JSON contract.
-- Đóng vai trò integration point giữa dataset và council core.
+### Decision core
+- `council_orchestrator.py`: orchestration một vòng quyết định và compose response.
+- `council_tools.py`: deterministic scoring/ranking/voting, không phụ thuộc network.
+- `council_schemas.py`: parse/normalize input và định nghĩa response contract.
 
-- Không làm:
-- Không nhúng logic trình bày UI.
-- Không phụ thuộc trực tiếp vào engine Unity.
+### Data layer
+- `orbital_elements.csv`: runtime catalog để build orbital objects.
+- `orbital_elements.meta.json`: metadata snapshot (source, refreshed_at_utc, rows, columns).
+- `TOI_2025.10.02_08.11.35.csv`: nguồn cho PIZ auxiliary endpoint.
 
-### 2.3 Decision Core (deterministic)
-- `council_orchestrator.py`: điều phối quyết định mỗi turn.
-- `council_tools.py`: rank/score/build votes bằng rule rõ ràng.
-- `council_schemas.py`: normalize payload + dataclass contract.
+### Auxiliary endpoints / supporting data services
+- `GET /api/piz-zones` là endpoint hỗ trợ exploration context từ TOI dataset.
+- Endpoint này không tham gia council decision loop; nó bổ trợ UI discovery/navigation.
 
-### 2.4 Data layer
-- Catalog runtime: `orbital_elements.csv`.
-- Metadata runtime: `orbital_elements.meta.json`.
-- TOI source cho PIZ endpoint: `TOI_2025.10.02_08.11.35.csv`.
+## 3) Runtime request flow
 
----
+```mermaid
+sequenceDiagram
+    participant U as Unity Controllers
+    participant C as ApiClient
+    participant A as Flask /api/council/respond
+    participant S as MissionContext.from_payload
+    participant O as generate_council_response
+    participant T as rank_targets_for_context + build_council_votes
 
-## 3) Code map
+    U->>C: user action + local state
+    C->>A: POST mission_context_packet
+    A->>S: sanitize and normalize payload
+    S-->>A: MissionContext
+    A->>O: execute council turn
+    O->>T: rank, score, build votes
+    O-->>A: CouncilResponse
+    A-->>C: council_response_package
+    C-->>U: render-safe UI update
+```
 
-### 3.1 Backend
+- Request boundary nằm tại `POST /api/council/respond`.
+- Parsing boundary nằm tại `request.get_json(silent=True)` và `MissionContext.from_payload`.
+- Decision boundary nằm tại `generate_council_response`.
+- Ranking/voting nằm trong `rank_targets_for_context` và `build_council_votes`.
+- Response luôn trả cấu trúc ổn định để `MissionPanelController` và `ConsoleController` render an toàn.
+
+## 4) Code map and dependency direction
+
+### Backend
 - `server.py`
-- Định nghĩa Flask routes.
-- Build orbital objects cache (`lru_cache`).
-- Kết nối với `generate_council_response`.
+- Owns HTTP routes, data loading, catalog object preparation.
+- Depends on `generate_council_response` cho council decision path.
 
 - `council_orchestrator.py`
-- Nhận `MissionContext` + ranked targets.
-- Branch `candidate_found/candidate_with_risk/insufficient_evidence`.
-- Compose `CouncilResponse`.
+- Depends on `MissionContext`, `CouncilResponse`, `CouncilVote` từ `council_schemas.py`.
+- Depends on `rank_targets_for_context`, `build_council_votes` từ `council_tools.py`.
 
 - `council_tools.py`
-- `compute_habitability_score`.
-- `rank_targets_for_context`.
-- `build_council_votes`.
+- Pure deterministic computations; không import Flask, không gọi network.
 
 - `council_schemas.py`
-- `MissionContext`, `MissionFilters`, `ChallengeState`.
-- `CouncilVote`, `CouncilResponse`.
-- Parse/normalize payload và clamp range.
+- Shared contract layer cho input normalization và output schema.
+- Không phụ thuộc server/runtime state.
 
-### 3.2 Scripts
-- `scripts/refresh_orbital_catalog.py`
-- `scripts/install_nightly_refresh_launchd.py`
+### Scripts
+- `scripts/refresh_orbital_catalog.py`: fetch NASA TAP, normalize, publish CSV + meta.
+- `scripts/install_nightly_refresh_launchd.py`: cài lịch refresh local và log sink.
 
-### 3.3 Tests
-- `test_council_orchestrator.py`
+### Tests
+- `test_council_orchestrator.py`: xác nhận branch behavior và response shape cho council loop.
 
----
+### Dependency rules
+- Unity UI không sở hữu scientific scoring logic.
+- Flask route layer không embed scoring rules; chỉ orchestration entry + data access.
+- Decision core không gọi network ở runtime path.
+- Schema layer là canonical boundary để giảm contract drift giữa client và backend.
 
-## 4) API surface hiện có
+## 5) API surface
 
-### 4.1 Council
+### Council decision
 - `POST /api/council/respond`
 
-### 4.2 Catalog
+### Catalog delivery
 - `GET /api/orbital-objects`
 - `GET /api/orbital-meta`
-- `GET /api/planets` (legacy)
+- `GET /api/planets` (legacy projection)
 - `GET /api/planet/<planet_id>`
 
-### 4.3 TOI/PIZ
+### Auxiliary data
 - `GET /api/piz-zones`
 
----
+## 6) Technical contracts
 
-## 5) Contract kỹ thuật
-
-### 5.1 Input contract (`mission_context_packet`)
+### Input contract (`mission_context_packet`)
 
 ```json
 {
@@ -175,7 +194,7 @@ flowchart TB
 }
 ```
 
-### 5.2 Output contract (`council_response_package`)
+### Output contract (`council_response_package`)
 
 ```json
 {
@@ -193,6 +212,13 @@ flowchart TB
       "confidence": 0.82,
       "message": "Recommend targeted follow-up based on ranking gain.",
       "evidence_fields": ["pl_orbper", "pl_orbsmax", "sy_dist"]
+    },
+    {
+      "agent": "Astrobiologist",
+      "stance": "support",
+      "confidence": 0.8,
+      "message": "Radius-temperature-insolation triad is within exploratory viability bounds.",
+      "evidence_fields": ["pl_rade", "pl_eqt", "pl_insol"]
     },
     {
       "agent": "Climate",
@@ -218,76 +244,76 @@ flowchart TB
 }
 ```
 
-### 5.3 Guardrails
-- Mode whitelist: `sandbox`, `challenge`, `discovery`.
-- Numeric range normalize cho radius/period filter.
-- `recent_actions` cap tối đa 20 events.
-- Không có candidate -> bắt buộc nhánh `insufficient_evidence`.
+### Guardrails / invariants
+- `mode` chỉ nhận `sandbox`, `challenge`, `discovery`; invalid mode về `discovery`.
+- `radiusMin/radiusMax`, `periodMin/periodMax` được normalize và swap nếu đảo ngược.
+- `recent_actions` luôn được chuẩn hóa về `list[str]` và cap 20 entries.
+- Council response giữ stable keyset cho cả nhánh success và `insufficient_evidence`.
 
----
+## 7) Responsibility boundaries
 
-## 6) Ranh giới trách nhiệm
-
-| Thành phần | Trách nhiệm chính | Không làm |
+| Component | Owns | Out of scope |
 |---|---|---|
-| Unity client | Thu thao tác, render phản hồi | Không tự chấm điểm khoa học |
-| Flask API | Parse/validate payload, trả contract ổn định | Không chứa UI logic |
-| Orchestrator | Quyết định branch response | Không đọc file dataset trực tiếp |
-| Tools | Tính score/rank/votes minh bạch | Không gọi network |
-| Data refresh script | Đồng bộ dataset từ NASA | Không phục vụ runtime API |
+| Unity controllers + ApiClient | User interaction, API calls, UI rendering | Scientific scoring, dataset mutation |
+| Flask API routes | Request boundary, payload intake, endpoint response | Business decision rules inside UI layer |
+| `council_orchestrator.py` | Branch decision, recommendation synthesis, response composition | Raw file IO for dataset |
+| `council_tools.py` | Deterministic score/rank/vote functions | Network calls, session persistence |
+| `council_schemas.py` | Input normalization and schema contracts | Endpoint transport logic |
+| Refresh scripts | Catalog refresh and metadata publish | Runtime council decision handling |
 
----
+## 8) Deployment and runtime assumptions
 
-## 7) NFR và SLO cho hackathon demo
+- Deployment target là local single-instance Flask cho hackathon demo.
+- Council core deterministic, không phụ thuộc external model/network ở runtime decision path.
+- Catalog snapshot phải được refresh và xác nhận trước demo window.
+- Cache orbital objects được warm trước session để tránh cold-start spike.
+- Nếu refresh job fail, runtime tiếp tục phục vụ từ artifact đang ổn định.
+- Kiến trúc này ưu tiên demo-first execution: predictability cao, failure domain nhỏ, rollback rõ.
+
+## 9) NFR and SLO for hackathon demo
 
 ### Performance
 - `POST /api/council/respond` p95 < 1200ms (local).
-- Ranking p95 < 120ms cho catalog runtime <= 900 objects.
+- Ranking p95 < 120ms với catalog runtime <= 900 objects.
 
 ### Reliability
-- Payload bẩn vẫn được normalize an toàn.
-- Dataset lỗi trả API error rõ ràng, không silent failure.
+- Payload bẩn không làm crash endpoint; luôn normalize về default an toàn.
+- No-candidate path phải trả `insufficient_evidence` thay vì lỗi runtime.
 
 ### Security
 - Không hardcode secrets trong repo.
-- Nếu mở rộng LLM sau này: dùng `.env` cho API keys.
+- Nếu mở rộng LLM layer sau MVP, credentials đi qua `.env`.
 
 ### Observability
-- Log tối thiểu: `request_id`, `mode`, `candidate_count`, `mission_status`, `latency_ms`.
+- Runtime logs tối thiểu: `request_id`, `mode`, `candidate_count`, `mission_status`, `latency_ms`.
+- Refresh logs tách riêng qua `logs/orbital_refresh.*.log`.
 
----
+## 10) Architectural risks and mitigations
 
-## 8) Rủi ro kiến trúc và giảm thiểu
+1. Contract drift giữa Unity và backend.
+- Mitigation: giữ schema boundary trong `council_schemas.py`, kiểm tra required keys ở mọi status.
 
-1. Dataset refresh lỗi gần giờ demo
-- Giảm thiểu: refresh sớm, giữ artifact ổn định trước phiên chấm.
+2. Dataset refresh lỗi sát giờ demo.
+- Mitigation: refresh sớm, freeze artifact snapshot trước phiên chấm, không overwrite khi validation fail.
 
-2. Contract drift giữa backend và Unity
-- Giảm thiểu: khóa schema sớm + contract check cho 2 nhánh success/insufficient.
+3. Filter quá hẹp tạo dead-end.
+- Mitigation: branch `insufficient_evidence` trả action `widen_filters` và options hành động rõ.
 
-3. No-candidate dead-end UX
-- Giảm thiểu: luôn trả `widen_filters` + player options actionable.
+4. Cold cache gây spike ở first request.
+- Mitigation: warm API catalog trước khi chạy live walkthrough.
 
-4. Scope creep vì thêm LLM quá sớm
-- Giảm thiểu: giữ deterministic council cho MVP; chỉ thêm LLM sau khi demo flow ổn định.
+## 11) Evolution path
 
----
+### MVP
+- Deterministic council end-to-end với contract ổn định.
 
-## 9) Roadmap kiến trúc (sau MVP)
+### Hybrid
+- Thêm model-assisted explanation layer sau council deterministic output.
+- Không thay scoring/ranking core bằng LLM.
 
-### Phase A (MVP hiện tại)
-- Deterministic council end-to-end.
-- Contract ổn định và demo-safe.
+### Adaptive
+- Tối ưu recommendation theo user behavior và acceptance pattern, vẫn giữ guardrails contract.
 
-### Phase B (Hybrid)
-- Thêm model router cho explanation layer (không thay thế deterministic scoring).
-- Vẫn giữ evidence mapping và fallback deterministic.
+## 12) Conclusion
 
-### Phase C (Adaptive)
-- Cá nhân hóa mission strategy theo hành vi user và acceptance rate.
-
----
-
-## 10) Kết luận
-
-Kiến trúc hiện tại ưu tiên tính chắc chắn cho hackathon: deterministic decision core, API contract rõ, data refresh tách riêng, và đủ điểm mở rộng cho hybrid agentic reasoning sau MVP mà không phá hệ thống đang chạy.
+Kiến trúc hiện tại tập trung đúng vào bài toán hackathon: runtime loop rõ, decision deterministic, contract ổn định cho Unity, và data refresh có kiểm soát để demo chạy chắc trong điều kiện single-instance local deployment.
