@@ -1,6 +1,12 @@
 # Atlas Orrery — System Pipeline
 
-> Tài liệu này mô tả execution pipelines của Atlas Orrery: data refresh, runtime council loop, branch behavior, operational controls, và điều kiện demo-ready. Kiến trúc module tổng thể nằm ở tài liệu architecture riêng.
+> Tài liệu này mô tả execution pipelines của Atlas Orrery: data refresh, runtime council loop, branch behavior, operational controls, và điều kiện demo-ready. Ownership module và dependency boundaries được định nghĩa trong `filemoi.md` (Technical Architecture).
+
+### What this document establishes
+- Luồng thực thi offline và online của hệ thống, theo đúng request/data path đang chạy.
+- Điều kiện branching của council response và UI-safe output behavior.
+- Guardrails vận hành: contract checks, error handling, observability, quality gates.
+- Mức an toàn demo: readiness criteria, fallback, rollback, recovery.
 
 ## 1) End-to-end pipeline map
 
@@ -40,7 +46,14 @@ flowchart TB
     C5 --> B8
 ```
 
+> PDF note: render Mermaid diagram to SVG trước khi đóng gói submission.
+
 Hệ thống có ba lớp pipeline rõ ràng: offline refresh để tạo artifact ổn định, online council loop để xử lý request thời gian thực, và ops controls để chặn rủi ro trước khi demo.
+
+### Source of truth boundaries
+- Dataset source of truth: published orbital artifact sau refresh validation (`data/orbital_elements.csv` + `data/orbital_elements.meta.json`).
+- Contract source of truth: schema contracts và normalization rules trong `council_schemas.py`.
+- Runtime decision source of truth: deterministic orchestration trong `generate_council_response` kết hợp `rank_targets_for_context` và `build_council_votes`.
 
 ## 2) Offline data refresh pipeline
 
@@ -203,6 +216,12 @@ Các path này hỗ trợ data delivery cho UI, không thuộc main council deci
 | Stale runtime cache | Sau refresh, trước cache reload | Tiếp tục phục vụ snapshot cũ | Dữ liệu có thể chưa phản ánh refresh mới nhất | Warm/restart backend trước demo |
 | Refresh validation failure | `refresh_orbital_catalog.py` | Dừng publish, giữ artifact cũ | Runtime vẫn chạy trên snapshot cũ | Sửa nguồn/lỗi rồi rerun job |
 
+### Failure containment model
+- Refresh failure được cô lập trong data update path; runtime loop tiếp tục phục vụ artifact cũ hợp lệ.
+- Runtime decision failure degrade về `insufficient_evidence` hoặc explicit API error có nguyên nhân.
+- Client rendering được bảo vệ bởi stable response keyset cho mọi mission status.
+- Auxiliary endpoint failure không chặn main council loop (`POST /api/council/respond`).
+
 ## 8) Observability and operational signals
 
 ### Runtime signals
@@ -230,6 +249,14 @@ Các path này hỗ trợ data delivery cho UI, không thuộc main council deci
 - `POST /api/council/respond` p95: < 1200ms (local demo).
 - Catalog assumption: runtime object set được giới hạn để giữ latency ổn định.
 
+### Assumption boundaries
+
+| Boundary | Statement |
+|---|---|
+| Guaranteed | Council endpoint giữ stable contract keys ở mọi branch; runtime council loop không phụ thuộc network/model provider. |
+| Assumed | Catalog size duy trì trong giới hạn mục tiêu demo; refresh hoàn tất trước phiên demo; Unity chỉ phụ thuộc vào stable keys. |
+| Out of scope | Multi-instance scaling, distributed failover, continuous streaming refresh. |
+
 ## 10) Quality gates and demo readiness
 
 ### Required checks
@@ -248,6 +275,16 @@ Các path này hỗ trợ data delivery cho UI, không thuộc main council deci
 - Dataset artifact hợp lệ và timestamp mới.
 - Main council loop stable qua `sandbox/challenge/discovery`.
 - Rehearsal cuối cùng pass end-to-end không crash.
+
+### Verification mapping
+
+| Concern | Verified by |
+|---|---|
+| Branch correctness | `test_council_orchestrator.py` |
+| Contract stability | request/response contract checks |
+| Dataset validity | refresh validation trước publish artifact |
+| Runtime readiness | API smoke checks + rehearsal pass |
+| Performance target | latency verification theo demo SLO |
 
 ## 11) Rollback and recovery
 

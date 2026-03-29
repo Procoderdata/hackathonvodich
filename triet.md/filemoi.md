@@ -2,6 +2,12 @@
 
 > Tài liệu này mô tả kiến trúc kỹ thuật và ranh giới module của Atlas Orrery. Pipeline vận hành (data refresh, runtime loop, quality gates, rollback) được tách riêng trong `SYSTEM_PIPELINE.md`.
 
+### What this document establishes
+- Thành phần sở hữu runtime decision loop (`council_orchestrator.py` + `council_tools.py`).
+- Thành phần sở hữu contract và normalization (`council_schemas.py`).
+- Thành phần sở hữu publish dataset artifact cho runtime (`refresh_orbital_catalog.py`).
+- Boundary module/dependency của runtime system; execution sequencing và rollback nằm trong `SYSTEM_PIPELINE.md`.
+
 ## 1) System architecture overview
 
 ```mermaid
@@ -63,6 +69,8 @@ flowchart TB
     X2 --> X1
     X2 --> X3
 ```
+
+> PDF note: render Mermaid diagram to SVG before export để giữ chất lượng trình bày.
 
 Hệ thống tách rõ ba lớp runtime: Unity điều khiển interaction và render, Flask cung cấp HTTP boundary, deterministic core xử lý decision logic dựa trên catalog dữ liệu đã được refresh trước đó.
 
@@ -152,6 +160,13 @@ sequenceDiagram
 - Flask route layer không embed scoring rules; chỉ orchestration entry + data access.
 - Decision core không gọi network ở runtime path.
 - Schema layer là canonical boundary để giảm contract drift giữa client và backend.
+
+### Implementation anchors
+- `server.py` owns HTTP boundary và route dispatch.
+- `council_orchestrator.py` owns branch synthesis cho `candidate_found`, `candidate_with_risk`, `insufficient_evidence`.
+- `council_tools.py` owns deterministic scoring/ranking/voting primitives.
+- `council_schemas.py` owns payload normalization và response contract dataclasses.
+- `test_council_orchestrator.py` verifies branch behavior và response stability ở council path.
 
 ## 5) API surface
 
@@ -250,6 +265,11 @@ sequenceDiagram
 - `recent_actions` luôn được chuẩn hóa về `list[str]` và cap 20 entries.
 - Council response giữ stable keyset cho cả nhánh success và `insufficient_evidence`.
 
+### Source of truth boundaries
+- Dataset source of truth: published artifact `data/orbital_elements.csv` sau refresh validation.
+- Contract source of truth: `council_schemas.py` (`MissionContext`, `CouncilResponse`, `CouncilVote`).
+- Runtime decision source of truth: deterministic orchestration tại `generate_council_response` + tools layer.
+
 ## 7) Responsibility boundaries
 
 | Component | Owns | Out of scope |
@@ -263,12 +283,29 @@ sequenceDiagram
 
 ## 8) Deployment and runtime assumptions
 
-- Deployment target là local single-instance Flask cho hackathon demo.
-- Council core deterministic, không phụ thuộc external model/network ở runtime decision path.
-- Catalog snapshot phải được refresh và xác nhận trước demo window.
-- Cache orbital objects được warm trước session để tránh cold-start spike.
-- Nếu refresh job fail, runtime tiếp tục phục vụ từ artifact đang ổn định.
-- Kiến trúc này ưu tiên demo-first execution: predictability cao, failure domain nhỏ, rollback rõ.
+### Assumption boundaries
+
+| Boundary | Statement |
+|---|---|
+| Guaranteed | Runtime council path không phụ thuộc network/model provider; Unity nhận stable response keyset ở mọi mission status. |
+| Assumed | Catalog runtime size nằm trong ngưỡng demo target; refresh hoàn tất trước phiên demo; backend chạy single-instance local process. |
+| Out of scope | Horizontal scaling, distributed orchestration, multi-region deployment. |
+
+### Non-goals
+- Không xây distributed architecture trong MVP.
+- Không dùng real-time stream processing cho catalog updates.
+- Không để Unity sở hữu scientific scoring/ranking.
+- Không dùng LLM để thay deterministic ranking core trong MVP.
+
+### Key architectural decisions
+
+| Decision | Why | Trade-off |
+|---|---|---|
+| Deterministic council core | Demo stability, explainability, testability | Giảm độ linh hoạt ngôn ngữ so với LLM-driven loop |
+| Single-instance local Flask runtime | Giảm failure domain và setup time cho hackathon | Không nhắm scale production |
+| Contract ownership tập trung ở `council_schemas.py` | Giảm contract drift giữa Unity và backend | Cần discipline khi mở rộng schema |
+| Artifact snapshot trước demo | Tránh rủi ro refresh fail sát giờ chấm | Dữ liệu có thể không phải mới nhất tuyệt đối |
+| Tách architecture doc và pipeline doc | Boundary rõ giữa design ownership và execution controls | Reviewer cần đọc cả 2 file để có full picture |
 
 ## 9) NFR and SLO for hackathon demo
 
@@ -301,6 +338,16 @@ sequenceDiagram
 
 4. Cold cache gây spike ở first request.
 - Mitigation: warm API catalog trước khi chạy live walkthrough.
+
+### Verification mapping
+
+| Concern | Verified by |
+|---|---|
+| Branch correctness | `test_council_orchestrator.py` |
+| Contract stability | schema guardrails + contract checks trong pipeline gate |
+| Dataset validity | refresh validation trước publish artifact |
+| Runtime readiness | API smoke checks + rehearsal pass |
+| Performance target | latency verification theo SLO demo |
 
 ## 11) Evolution path
 
