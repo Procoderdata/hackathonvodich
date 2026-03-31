@@ -1,0 +1,68 @@
+flowchart TB
+    subgraph CLIENT[React/Three.js Client]
+      C1[CommandCenterPage.jsx]
+      C2[GalaxyCanvas plus OrreryEngine.js]
+      C3[ConsolePanel plus MissionControl]
+      C4[Browser fetch plus local session state]
+    end
+
+    subgraph API[Flask API]
+      A1[POST /api/council/respond]
+      A2[GET /api/orbital-objects]
+      A3[GET /api/orbital-meta]
+      A4[GET /api/planets]
+      A5[GET /api/planet planet_id]
+      A6[GET /api/piz-zones]
+    end
+
+    subgraph AI[AI Council Layer]
+      L1[council_orchestrator.py]
+      L2[Gemini reasoning engine primary]
+      L3[Groq fallback path]
+      L4[Structured response assembly]
+    end
+
+    subgraph CORE[Deterministic Grounding Layer]
+      G1[council_schemas.py]
+      G2[council_tools.py]
+      G3[Evidence summary plus guardrails]
+    end
+
+    subgraph DATA[Data Layer]
+      D1[data/orbital_elements.csv]
+      D2[data/orbital_elements.meta.json]
+      D3[data/TOI_2025.10.02_08.11.35.csv]
+    end
+
+    subgraph OPS[DataOps]
+      O1[scripts/refresh_orbital_catalog.py]
+      O2[scripts/install_nightly_refresh_launchd.py]
+      O3[logs/orbital_refresh.*.log]
+    end
+
+    C4 --> A1
+    C4 --> A2
+    C4 --> A3
+    C4 --> A4
+    C4 --> A5
+    C4 --> A6
+
+    A1 --> L1
+    L1 --> G1
+    L1 --> G2
+    G2 --> G3
+    L1 --> L2
+    L1 --> L3
+    L2 --> L4
+    L3 --> L4
+
+    A2 --> D1
+    A3 --> D2
+    A4 --> D1
+    A5 --> D1
+    A6 --> D3
+
+    O1 --> D1
+    O1 --> D2
+    O2 --> O1
+    O2 --> O3
