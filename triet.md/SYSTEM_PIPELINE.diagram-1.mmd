@@ -1,0 +1,35 @@
+flowchart TB
+    subgraph OFFLINE[Offline Data Supply Pipeline]
+      O1[Manual or scheduled trigger]
+      O2[Fetch NASA pscomppars]
+      O3[Normalize and validate rows]
+      O4[Publish orbital artifact]
+      O5[Warm runtime catalog]
+      O1 --> O2 --> O3 --> O4 --> O5
+    end
+
+    subgraph ONLINE[Online Mission Turn Pipeline]
+      R1[Player action]
+      R2[Frontend state aggregation]
+      R3[POST mission_context_packet]
+      R4[Normalize payload]
+      R5[Deterministic grounding]
+      R6[Gemini reasoning]
+      R7[Groq fallback if needed]
+      R8[Structured response assembly]
+      R9[UI render and mission update]
+      R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R8 --> R9
+      R6 -. fallback .-> R7 --> R8
+    end
+
+    subgraph OPS[Demo Protection Pipeline]
+      Q1[Unit tests]
+      Q2[API smoke checks]
+      Q3[Contract verification]
+      Q4[Latency rehearsal]
+      Q5[Final demo freeze]
+      Q1 --> Q2 --> Q3 --> Q4 --> Q5
+    end
+
+    O5 --> R5
+    Q5 --> R9

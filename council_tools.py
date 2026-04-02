@@ -62,33 +62,106 @@ def rank_targets_for_context(objects: list[dict], filters) -> list[dict]:
     return ranked[:25]
 
 
+def derive_risk_flags(primary: dict) -> list[str]:
+    eccentricity = safe_float(primary.get("orbit", {}).get("eccentricity"), 0.0)
+    temp = safe_float(primary.get("temp"), 300.0)
+    insol = safe_float(primary.get("insolation"), 1.0)
+    distance_pc = safe_float(primary.get("distance_pc"), 0.0)
+    score = safe_float(primary.get("score"), 0.0)
+
+    flags: list[str] = []
+    if eccentricity > 0.22:
+        flags.append("elevated_orbital_eccentricity")
+    if not (240.0 <= temp <= 340.0):
+        flags.append("temperature_outside_reference_band")
+    if not (0.45 <= insol <= 1.8):
+        flags.append("insolation_outside_reference_band")
+    if distance_pc > 1200.0:
+        flags.append("very_distant_target")
+    if score < 0.33:
+        flags.append("low_baseline_habitability_score")
+    return flags
+
+
+def build_evidence_packet(primary: dict, ranked: list[dict], top_k: int = 3) -> dict:
+    top_candidates = []
+    for item in ranked[: max(1, top_k)]:
+        top_candidates.append(
+            {
+                "id": item.get("id"),
+                "score": round(safe_float(item.get("score"), 0.0), 4),
+                "radius_earth": round(safe_float(item.get("radius"), 0.0), 3),
+                "temp_k": round(safe_float(item.get("temp"), 0.0), 2),
+                "insolation": round(safe_float(item.get("insolation"), 0.0), 3),
+                "eccentricity": round(safe_float(item.get("orbit", {}).get("eccentricity"), 0.0), 4),
+                "period_days": round(safe_float(item.get("period"), 0.0), 2),
+                "distance_pc": round(safe_float(item.get("distance_pc"), 0.0), 2),
+                "habitable": bool(item.get("habitable", False)),
+            }
+        )
+
+    return {
+        "primary_target": {
+            "id": primary.get("id"),
+            "score": round(safe_float(primary.get("score"), 0.0), 4),
+            "radius_earth": round(safe_float(primary.get("radius"), 0.0), 3),
+            "temp_k": round(safe_float(primary.get("temp"), 0.0), 2),
+            "insolation": round(safe_float(primary.get("insolation"), 0.0), 3),
+            "eccentricity": round(safe_float(primary.get("orbit", {}).get("eccentricity"), 0.0), 4),
+            "period_days": round(safe_float(primary.get("period"), 0.0), 2),
+            "distance_pc": round(safe_float(primary.get("distance_pc"), 0.0), 2),
+            "habitable": bool(primary.get("habitable", False)),
+        },
+        "risk_flags": derive_risk_flags(primary),
+        "top_candidates": top_candidates,
+    }
+
+
 def build_council_votes(primary: dict, mode: str) -> list[dict]:
     score = safe_float(primary.get("score"), 0.0)
     eccentricity = safe_float(primary.get("orbit", {}).get("eccentricity"), 0.0)
     temp = safe_float(primary.get("temp"), 300.0)
     insol = safe_float(primary.get("insolation"), 1.0)
     period = safe_float(primary.get("period"), 0.0)
+    risk_flags = derive_risk_flags(primary)
 
     navigator_conf = clamp(0.45 + (score * 0.5), 0.1, 0.99)
     astro_conf = clamp(0.4 + (score * 0.55), 0.1, 0.99)
     climate_conf = clamp(0.42 + (eccentricity * 0.4) + (abs(insol - 1.0) * 0.06), 0.1, 0.99)
+    archivist_conf = clamp(0.55 + (score * 0.25), 0.1, 0.99)
 
     action_phrase = "targeted follow-up" if mode == "discovery" else "deep verification"
-    climate_stance = "caution" if eccentricity > 0.22 or not (240 <= temp <= 340) else "support"
+    navigator_stance = "support" if score >= 0.3 else "caution"
+    astro_stance = "support" if (0.75 <= safe_float(primary.get("radius"), 0.0) <= 2.3 and 220 <= temp <= 340) else "caution"
 
-    return [
+    climate_stance = "support"
+    if eccentricity > 0.38 or temp < 200 or temp > 390:
+        climate_stance = "oppose"
+    elif eccentricity > 0.22 or not (240 <= temp <= 340):
+        climate_stance = "caution"
+
+    archivist_stance = "support" if climate_stance == "support" and len(risk_flags) <= 1 else "caution"
+    risk_phrase = ", ".join(risk_flags[:3]) if risk_flags else "no major risk flags"
+
+    votes = [
         {
             "agent": "Navigator",
-            "stance": "support",
+            "stance": navigator_stance,
             "confidence": round(navigator_conf, 2),
-            "message": f"Recommend {action_phrase} on {primary.get('id', 'the selected target')} based on ranking gain.",
+            "message": (
+                f"Recommend {action_phrase} on {primary.get('id', 'the selected target')} "
+                "because this target maximizes current exploration value."
+            ),
             "evidence_fields": ["pl_orbper", "pl_orbsmax", "sy_dist"],
         },
         {
             "agent": "Astrobiologist",
-            "stance": "support",
+            "stance": astro_stance,
             "confidence": round(astro_conf, 2),
-            "message": "Radius-temperature-insolation triad is within exploratory viability bounds.",
+            "message": (
+                "Habitability triad (radius, temperature, insolation) "
+                "is within exploratory viability bounds for a follow-up pass."
+            ),
             "evidence_fields": ["pl_rade", "pl_eqt", "pl_insol"],
         },
         {
@@ -97,9 +170,32 @@ def build_council_votes(primary: dict, mode: str) -> list[dict]:
             "confidence": round(climate_conf, 2),
             "message": (
                 f"Orbital eccentricity={eccentricity:.2f}, period={period:.1f}d suggests uncertainty bands."
-                if climate_stance == "caution"
+                if climate_stance in {"caution", "oppose"}
                 else "Orbital stability appears acceptable for current simulation assumptions."
             ),
             "evidence_fields": ["pl_orbeccen", "pl_orbper", "pl_orbincl"],
         },
+        {
+            "agent": "Archivist",
+            "stance": archivist_stance,
+            "confidence": round(archivist_conf, 2),
+            "message": (
+                f"Council split recorded for mission log: {risk_phrase}. "
+                "Recommend preserving both support and caution arguments for next turn."
+            ),
+            "evidence_fields": ["pl_name", "pl_rade", "pl_eqt", "pl_insol", "pl_orbeccen", "pl_orbper"],
+        },
     ]
+
+    # Keep explicit scientific debate visible in every turn.
+    if all(vote["stance"] == "support" for vote in votes):
+        for vote in votes:
+            if vote["agent"] == "Climate":
+                vote["stance"] = "caution"
+                vote["message"] = (
+                    f"{vote['message']} "
+                    "Caution retained: atmospheric composition remains uncertain in current dataset."
+                )
+                break
+
+    return votes

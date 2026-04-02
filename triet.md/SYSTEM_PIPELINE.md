@@ -1,305 +1,560 @@
-# Atlas Orrery — System Pipeline
+# Atlas Orrery - System Pipeline
 
-> Tài liệu này mô tả execution pipelines của Atlas Orrery: data refresh, runtime council loop, branch behavior, operational controls, và điều kiện demo-ready. Ownership module và dependency boundaries được định nghĩa trong `filemoi.md` (Technical Architecture).
+> Đây là execution playbook của Atlas Orrery. Nếu `filemoi.md` trả lời câu hỏi "hệ thống được dựng như thế nào", thì file này trả lời câu hỏi quan trọng hơn với một đội đi thi hackathon: "hệ thống sẽ sống, phản ứng, chịu lỗi, và thắng buổi demo như thế nào".
 
-### What this document establishes
-- Luồng thực thi offline và online của hệ thống, theo đúng request/data path đang chạy.
-- Điều kiện branching của council response và UI-safe output behavior.
-- Guardrails vận hành: contract checks, error handling, observability, quality gates.
-- Mức an toàn demo: readiness criteria, fallback, rollback, recovery.
+## What this document proves
 
-## 1) End-to-end pipeline map
+- Dữ liệu đi từ NASA-derived artifact tới UI theo một đường ống rõ ràng, có checkpoint, có rollback.
+- Runtime council loop không phải một đống lời hứa; nó là một chuỗi bước có budget, có guardrails, có fallback.
+- `Gemini` xuất hiện ở đúng bước tạo intelligence, còn `Groq` đứng sẵn để giữ nhịp nếu primary path có vấn đề.
+- Mọi branch quan trọng đều có user-safe outcome: `candidate_found`, `candidate_with_risk`, `insufficient_evidence`, hoặc API error có thể giải thích.
+- Đội thi có thể rehearsal, đo latency, kiểm tra contract, và khóa trạng thái demo trước giờ chấm.
+
+## 1) Pipeline philosophy
+
+Atlas Orrery theo 4 nguyên tắc vận hành:
+
+1. `No fake science`
+   - Không bịa dữ liệu.
+   - Không để model nói vượt evidence packet.
+
+2. `No dead-end UX`
+   - Candidate rỗng không được biến thành crash.
+   - Council phải luôn trả về next action có ích.
+
+3. `No single-provider fragility`
+   - `Gemini` là primary path.
+   - `Groq` là fallback path.
+
+4. `No free-form render debt`
+   - UI chỉ render structured payload.
+   - Mọi branch đều giữ stable response contract.
+
+## 2) End-to-end system pipeline
 
 ```mermaid
 flowchart TB
-    subgraph OFFLINE[Offline Data Refresh]
-      A1[Manual or scheduled trigger]
-      A2[Fetch NASA pscomppars]
-      A3[Normalize and validate dataset]
-      A4[Publish orbital_elements.csv and meta.json]
-      A5[Catalog snapshot ready]
-      A1 --> A2 --> A3 --> A4 --> A5
+    subgraph OFFLINE[Offline Data Supply Pipeline]
+      O1[Manual or scheduled trigger]
+      O2[Fetch NASA pscomppars]
+      O3[Normalize and validate rows]
+      O4[Publish orbital artifact]
+      O5[Warm runtime catalog]
+      O1 --> O2 --> O3 --> O4 --> O5
     end
 
-    subgraph ONLINE[Online Runtime Council Loop]
-      B1[Unity user action]
-      B2[ApiClient POST /api/council/respond]
-      B3[Payload sanitize and MissionContext]
-      B4[generate_council_response]
-      B5[rank_targets_for_context]
-      B6[build_council_votes]
-      B7[Compose CouncilResponse]
-      B8[Render-safe UI update]
-      B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8
+    subgraph ONLINE[Online Mission Turn Pipeline]
+      R1[Player action]
+      R2[Frontend state aggregation]
+      R3[POST mission_context_packet]
+      R4[Normalize payload]
+      R5[Deterministic grounding]
+      R6[Gemini reasoning]
+      R7[Groq fallback if needed]
+      R8[Structured response assembly]
+      R9[UI render and mission update]
+      R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R8 --> R9
+      R6 -. fallback .-> R7 --> R8
     end
 
-    subgraph OPS[Operational Controls]
-      C1[Unit tests]
-      C2[API smoke checks]
-      C3[Contract checks]
-      C4[Latency verification]
-      C5[Rehearsal pass]
-      C1 --> C2 --> C3 --> C4 --> C5
+    subgraph OPS[Demo Protection Pipeline]
+      Q1[Unit tests]
+      Q2[API smoke checks]
+      Q3[Contract verification]
+      Q4[Latency rehearsal]
+      Q5[Final demo freeze]
+      Q1 --> Q2 --> Q3 --> Q4 --> Q5
     end
 
-    A5 --> B4
-    C5 --> B8
+    O5 --> R5
+    Q5 --> R9
 ```
 
-> PDF note: render Mermaid diagram to SVG trước khi đóng gói submission.
+Pipeline này được thiết kế để answer một câu hỏi rất thực tế: nếu giám khảo chạm vào app trong đúng 90 giây quan trọng nhất, system có đủ lực để phản hồi như một sản phẩm hoàn chỉnh hay không.
 
-Hệ thống có ba lớp pipeline rõ ràng: offline refresh để tạo artifact ổn định, online council loop để xử lý request thời gian thực, và ops controls để chặn rủi ro trước khi demo.
+## 3) Pipeline A - Offline data supply chain
 
-### Source of truth boundaries
-- Dataset source of truth: published orbital artifact sau refresh validation (`data/orbital_elements.csv` + `data/orbital_elements.meta.json`).
-- Contract source of truth: schema contracts và normalization rules trong `council_schemas.py`.
-- Runtime decision source of truth: deterministic orchestration trong `generate_council_response` kết hợp `rank_targets_for_context` và `build_council_votes`.
+### Objective
 
-## 2) Offline data refresh pipeline
+Biến raw NASA-derived data thành runtime artifact sạch, ổn định, có lineage, đủ nhẹ để phục vụ local demo environment.
 
-### Goal
-- Cập nhật catalog quỹ đạo từ NASA thành artifact runtime ổn định cho backend.
+### Trigger modes
 
-### Trigger
-- Manual: `python scripts/refresh_orbital_catalog.py`.
-- Scheduled (macOS): `scripts/install_nightly_refresh_launchd.py` cài launchd job.
+- Manual trigger:
+  - `python scripts/refresh_orbital_catalog.py`
+
+- Scheduled trigger:
+  - `python scripts/install_nightly_refresh_launchd.py --hour 2 --minute 15`
 
 ### Inputs
-- NASA Exoplanet Archive TAP (`pscomppars`).
-- SQL query lấy các trường orbital/science cần cho runtime (`pl_name`, `hostname`, `pl_orbper`, `pl_orbsmax`, `pl_orbeccen`, `pl_orbtper`, `pl_tranmid`, `pl_rade`, `pl_eqt`, `pl_insol`, `sy_dist`, `ra`, `dec`, ...).
 
-### Processing
-1. Fetch CSV từ TAP endpoint.
-2. Parse dataframe, dedupe theo `pl_name`.
-3. Coerce numeric fields (`errors="coerce"`).
-4. Validate schema và row sanity:
-- Dataset không rỗng.
-- Có đầy đủ cột bắt buộc từ query.
-- Loại record thiếu `pl_orbper` hoặc `pl_orbsmax`.
-- Áp dụng range sanity cơ bản; giá trị bất thường được giữ dưới kiểm soát bằng clamp/drop ở runtime object builder.
-5. Sort và apply row limit (`--limit`, mặc định 1500).
-6. Publish artifact.
+- NASA Exoplanet Archive TAP query result.
+- Required orbital and science fields:
+  - `pl_name`
+  - `hostname`
+  - `pl_orbper`
+  - `pl_orbsmax`
+  - `pl_orbeccen`
+  - `pl_orbtper`
+  - `pl_tranmid`
+  - `pl_rade`
+  - `pl_eqt`
+  - `pl_insol`
+  - `sy_dist`
+  - `ra`
+  - `dec`
 
-### Outputs
+### Step-by-step execution
+
+1. Start refresh job.
+2. Fetch raw dataset from TAP endpoint.
+3. Parse CSV into dataframe.
+4. Coerce numeric columns with safe conversion.
+5. Dedupe rows by planet identity.
+6. Validate required columns.
+7. Drop rows missing orbital minimums như `pl_orbper` hoặc `pl_orbsmax`.
+8. Apply sanity trimming để loại các record không thể hỗ trợ runtime demo.
+9. Sort and cap to runtime-friendly size.
+10. Publish:
+   - `data/orbital_elements.csv`
+   - `data/orbital_elements.meta.json`
+11. Mark artifact ready for runtime load.
+
+### Output artifacts
+
 - `data/orbital_elements.csv`
-- `data/orbital_elements.meta.json` với `refreshed_at_utc`, `source`, `query`, `rows`, `columns`.
+- `data/orbital_elements.meta.json`
 
-### Failure handling
-- TAP lỗi, parse lỗi, hoặc validation fail: job fail trước publish hoàn chỉnh.
-- Không overwrite artifact cũ khi validation không đạt.
-- Runtime tiếp tục dùng catalog snapshot đang ổn định.
+### Meta payload should include
 
-### Observability
-- Script stdout/stderr.
-- Launchd logs: `logs/orbital_refresh.out.log`, `logs/orbital_refresh.err.log`.
-- Refresh signals cần theo dõi: `job_start`, `job_end`, `status`, `row_count`, `duration_ms`, `failure_reason`.
+- `source`
+- `refreshed_at_utc`
+- `rows`
+- `columns`
+- `solver`
+- `epoch_policy`
+- optional `query_fingerprint`
 
-## 3) Runtime council response pipeline
+### Failure policy
 
-### Goal
-- Chuyển user interaction thành `council_response_package` ổn định để Unity render an toàn.
+- Fetch fail: abort refresh, giữ artifact cũ.
+- Validation fail: không publish bản mới.
+- Publish fail: không làm bẩn snapshot đang chạy.
+- Runtime vẫn tiếp tục phục vụ bản catalog gần nhất còn hợp lệ.
 
-### Trigger
-- User action trong Unity: đổi filter, chọn target, thao tác mission.
+### Why this matters in hackathon terms
+
+Đội thi không thắng bằng câu "lúc nãy data hơi lỗi". Chúng tôi cần một artifact pipeline đủ cứng để dữ liệu không trở thành thứ phá hỏng demo.
+
+## 4) Pipeline B - Runtime mission turn
+
+### Objective
+
+Chuyển một thao tác của người chơi thành một council response có trọng lượng khoa học, có AI reasoning, có next action, và render được ngay trên UI.
+
+### Trigger examples
+
+- đổi filter radius,
+- đổi period band,
+- bắt đầu `grid scan`,
+- bắt đầu `spiral scan`,
+- chọn một target cụ thể,
+- mở dossier để hỏi "why this one?".
+
+### Runtime sequence
+
+```mermaid
+sequenceDiagram
+    participant P as Player
+    participant FE as CommandCenterPage.jsx
+    participant API as Flask council endpoint
+    participant SC as MissionContext normalization
+    participant GRD as Grounding tools
+    participant GM as Gemini
+    participant GQ as Groq fallback
+    participant ASM as Response assembly
+    participant UI as Console and mission UI
+
+    P->>FE: scan or filter or select target
+    FE->>API: POST mission_context_packet
+    API->>SC: sanitize plus normalize
+    SC-->>API: typed MissionContext
+    API->>GRD: rank candidates plus build evidence packet
+    GRD-->>API: grounded context
+    API->>GM: reasoning request
+    alt Gemini timeout or unavailable
+        API->>GQ: same grounded context
+        GQ-->>API: fallback reasoning
+    else Gemini success
+        GM-->>API: primary reasoning
+    end
+    API->>ASM: contract-safe synthesis
+    ASM-->>FE: council_response_package
+    FE-->>UI: render headline votes options highlight
+```
+
+### Step-by-step execution
+
+1. Player performs an action.
+2. Frontend captures local mission state.
+3. Frontend builds `mission_context_packet`.
+4. Frontend sends `POST /api/council/respond`.
+5. Backend parses JSON bằng safe mode.
+6. `MissionContext.from_payload` normalizes:
+   - mode,
+   - filters,
+   - challenge state,
+   - recent actions.
+7. Grounding layer runs:
+   - rank targets,
+   - compute baseline score,
+   - select primary candidate,
+   - build evidence summary,
+   - identify caution flags.
+8. Orchestrator creates a model-ready grounded council brief.
+9. `Gemini` receives the grounded brief and performs reasoning.
+10. Nếu `Gemini` không đạt timeout budget hoặc provider path lỗi, orchestrator chuyển sang `Groq`.
+11. Response assembly merges:
+   - deterministic evidence,
+   - reasoning output,
+   - branch status,
+   - player options,
+   - discovery log line.
+12. Frontend renders:
+   - headline,
+   - support and caution votes,
+   - primary action,
+   - highlight target in scene.
+
+### Runtime budgets
+
+- FE state aggregation: `< 20ms`
+- request parse and normalization: `< 30ms`
+- deterministic grounding: `< 120ms`
+- primary reasoning target: `< 1100ms`
+- fallback reasoning target: `< 700ms`
+- response assembly: `< 20ms`
+- FE render after response: `< 150ms`
+
+## 5) Pipeline C - Deterministic grounding before AI
+
+Đây là bước khiến AI layer trở nên đáng tin.
 
 ### Inputs
-- Request payload từ `ApiClient`.
-- Catalog runtime từ `build_orbital_objects()`.
 
-### Processing
-1. Boundary nhận request tại `POST /api/council/respond`.
-2. Parse JSON với `request.get_json(silent=True)`.
-3. Normalize payload bằng `MissionContext.from_payload`.
-4. Gọi `generate_council_response`.
-5. Trong orchestrator:
-- `rank_targets_for_context` để lọc/rank.
-- Chọn primary target.
-- `build_council_votes` để tạo vote set.
-- Compose `CouncilResponse` theo branch.
-6. Return JSON cho Unity.
+- normalized mission context,
+- current orbital catalog,
+- selected target if any,
+- current filter band,
+- recent actions.
 
-### Outputs
-- `mission_status` một trong: `candidate_found`, `candidate_with_risk`, `insufficient_evidence`.
-- Response contract ổn định gồm `headline`, `primary_recommendation`, `council_votes`, `player_options`, `discovery_log_entry`, `evidence_summary`.
+### Grounding outputs
 
-### Failure handling
-- Payload lỗi kiểu: normalize về default safe values.
-- Dataset unavailable: trả API error có message nguyên nhân.
-- Candidate rỗng: trả `insufficient_evidence` thay vì lỗi runtime.
+- ranked candidate list,
+- primary candidate,
+- baseline score,
+- evidence summary,
+- caution flags,
+- branch hint (`candidate possible` hay `insufficient_evidence`).
 
-### Observability
-- Runtime log fields tối thiểu: `request_id`, `mode`, `selected_planet_id`, `candidate_count`, `mission_status`, `latency_ms`.
-- Latency checkpoints: parse, ranking, compose, total endpoint time.
+### Deterministic tasks that must happen before any model call
 
-## 4) Branch and response behavior
+1. Validate filter ranges.
+2. Apply candidate filter.
+3. Compute baseline habitability score.
+4. Sort and truncate candidate list.
+5. Resolve selected target nếu user đã click trước đó.
+6. Produce evidence packet.
+7. Mark explicit caution nếu dữ liệu thiếu hoặc orbital risk cao.
 
-### `candidate_found`
-- Condition: candidate set không rỗng và không có caution vote.
-- Response characteristics:
-- `mission_status=candidate_found`
-- `primary_recommendation.target_id` có giá trị
-- `player_options` ưu tiên next action theo mode
-- UI behavior:
-- Mission panel render recommendation chính.
-- Console render support votes và evidence.
+### Why this ordering is non-negotiable
 
-### `candidate_with_risk`
-- Condition: candidate set không rỗng, có ít nhất một vote `stance=caution`.
-- Response characteristics:
-- `mission_status=candidate_with_risk`
-- Headline có cảnh báo rủi ro
-- Vote set chứa both support và caution
-- UI behavior:
-- Hiển thị recommendation + cảnh báo đồng thời.
-- Không chặn user action, nhưng ưu tiên options xác minh sâu hơn.
+Nếu model reason trước khi grounding xong, toàn bộ system sẽ trượt về kiểu chatbot "nói hay nhưng không khóa được khoa học". Chúng tôi không chấp nhận điều đó.
 
-### `insufficient_evidence`
-- Condition: candidate set rỗng sau khi áp filters.
-- Response characteristics:
-- `mission_status=insufficient_evidence`
-- `primary_recommendation.action=widen_filters`
-- `council_votes` có thể rỗng
-- UI behavior:
-- Không crash render.
-- Hiển thị options thoát dead-end (nới radius, tăng period max, bật confirmed planets).
+## 6) Pipeline D - AI council reasoning
 
-## 5) Supporting data delivery paths
+### Objective
 
-Các path này hỗ trợ data delivery cho UI, không thuộc main council decision loop:
+Biến grounded scientific packet thành một hội đồng có tiếng nói, có disagreement, và có recommendation đủ mạnh để tạo wow factor.
 
-- `GET /api/orbital-objects`
-- Trả catalog object + meta cho visualization/runtime state.
+### Council roles
 
-- `GET /api/orbital-meta`
-- Trả metadata nhẹ để health/info panel.
+- `Navigator`
+  - ưu tiên candidate tiếp theo,
+  - chọn action phù hợp cho mission.
 
-- `GET /api/planet/<planet_id>`
-- Trả planet detail khi user mở chi tiết mục tiêu.
+- `Astrobiologist`
+  - nhìn vào viability và habitability.
 
-- `GET /api/piz-zones`
-- Trả PIZ exploration data từ TOI dataset.
-- Đây là auxiliary discovery endpoint, không tham gia branch logic của council response.
+- `Climate/Orbital Agent`
+  - đóng vai phản biện,
+  - nêu risk và uncertainty.
 
-## 6) Contract checks and stability guarantees
+- `Archivist`
+  - biến kết quả thành log line đủ sáng sủa để người chơi hiểu ngay.
 
-### Request validation
-- Parse JSON theo mode an toàn (`silent=True`).
-- `MissionContext.from_payload` enforce:
-- mode whitelist (`sandbox/challenge/discovery`)
-- normalize/swap filter ranges
-- `recent_actions` capped list
+### Model request composition
 
-### Response validation
-- Council response phải giữ stable keyset ở mọi status.
-- Numeric confidence trong votes được clamp theo guardrails tool layer.
+Model request không phải raw user text. Nó là một packet đã được kiểm soát, thường gồm:
 
-### Required keys (all statuses)
-- `mission_status`
-- `headline`
-- `primary_recommendation`
-- `council_votes`
-- `player_options`
-- `discovery_log_entry`
-- `evidence_summary` (object hoặc `null`)
+- mode,
+- player goal,
+- selected target,
+- top candidates,
+- evidence summary,
+- risk flags,
+- response schema instruction,
+- tone directive cho Science Council.
 
-### Render-safe guarantees for client
-- Insufficient branch vẫn trả đủ keys để UI không cần branch-specific parsing đặc biệt.
-- `mission_status` là selector chính cho state rendering ở Unity.
+### Gemini primary path
 
-## 7) Error taxonomy and fallback policy
+`Gemini` được dùng để:
 
-| Failure type | Where it happens | System behavior | User-facing behavior | Retry / fallback |
+- reason đa bước trên evidence,
+- tạo council debate,
+- tổng hợp recommendation có cấu trúc,
+- viết narrative đủ mạnh cho hackathon demo.
+
+### Groq fallback path
+
+`Groq` được gọi khi:
+
+- `Gemini` timeout,
+- provider unavailable,
+- quota issue,
+- latency vượt demo budget.
+
+### Fallback invariants
+
+- cùng grounded packet,
+- cùng output schema,
+- cùng branch semantics,
+- không cho phép fallback trả về response shape khác.
+
+### Safe degraded outcome
+
+Nếu cả 2 provider path đều không usable:
+
+- không được crash endpoint,
+- system phải trả deterministic-safe branch,
+- headline và options vẫn phải đủ để người dùng tiếp tục thao tác.
+
+## 7) Pipeline E - Branch behavior
+
+### Branch 1: `candidate_found`
+
+Condition:
+
+- candidate list không rỗng,
+- risk không đủ mạnh để nâng thành caution-heavy branch.
+
+Expected response:
+
+- headline mạnh, rõ target,
+- `primary_recommendation.target_id` có giá trị,
+- council votes nghiêng support,
+- player options hướng tới hành động tiếp theo.
+
+UI effect:
+
+- mission panel đẩy target nổi bật,
+- console log thể hiện sự đồng thuận.
+
+### Branch 2: `candidate_with_risk`
+
+Condition:
+
+- candidate list không rỗng,
+- có risk signals hoặc caution vote đáng kể.
+
+Expected response:
+
+- headline vẫn thúc đẩy action,
+- nhưng phải kéo theo warning rõ ràng,
+- votes gồm cả support và caution.
+
+UI effect:
+
+- tạo cảm giác debate thật,
+- không làm system lưỡng lự kiểu "không biết nói gì",
+- khuyến khích user đào sâu thay vì bỏ cuộc.
+
+### Branch 3: `insufficient_evidence`
+
+Condition:
+
+- filter band quá chặt,
+- selected target không còn hợp lệ,
+- candidate list rỗng sau grounding.
+
+Expected response:
+
+- `mission_status=insufficient_evidence`,
+- `primary_recommendation.action=widen_filters`,
+- `player_options` là đường thoát cụ thể.
+
+UI effect:
+
+- tuyệt đối không dead-end,
+- user vẫn cảm thấy council có hướng dẫn chứ không chỉ báo lỗi.
+
+## 8) Pipeline F - UI rendering and mission update
+
+### What frontend must do
+
+1. Append headline vào console.
+2. Append support and caution votes.
+3. Update recommendation panel.
+4. Highlight target in orrery nếu có target.
+5. Preserve newest valid response only.
+
+### Render rules
+
+- `headline` -> command line
+- support vote -> info line
+- caution vote -> warning line
+- no model-specific render branch
+
+### UI protection rules
+
+- response cũ đến muộn không được overwrite response mới hơn,
+- branch `insufficient_evidence` vẫn phải render đầy đủ,
+- FE không parse free-form essay để suy đoán UI behavior.
+
+## 9) Pipeline G - Challenge mode specifics
+
+Atlas Orrery không chỉ có discovery mode. Trong hackathon framing, challenge mode là nơi AI bắt đầu giống một mission director thay vì chỉ là advisor.
+
+### Challenge mode loop
+
+1. Generate objective.
+2. Track player actions.
+3. Evaluate progress deterministically.
+4. Feed progress plus scientific state vào council turn.
+5. Council trả hint, escalation, hoặc confirmation.
+
+### Deterministic core must own
+
+- objective validity,
+- progress calculation,
+- win/loss state,
+- scoring.
+
+### AI layer should own
+
+- hint phrasing,
+- urgency,
+- scientific narrative,
+- next-step recommendation.
+
+## 10) Error taxonomy and containment
+
+| Failure type | Where it appears | System behavior | User-facing outcome | Containment strategy |
 |---|---|---|---|---|
-| Invalid payload shape | `/api/council/respond` parse/normalize | Normalize về default MissionContext | Vẫn nhận response hợp lệ | No retry cần thiết |
-| Dataset unavailable | Catalog load (`build_orbital_objects`) | Trả 500 với error reason | UI hiển thị backend error + retry CTA | Retry sau khi khôi phục dataset |
-| Empty candidate set | `rank_targets_for_context` | Trả `insufficient_evidence` | Gợi ý nới filter, không dead-end | User-driven fallback action |
-| Stale runtime cache | Sau refresh, trước cache reload | Tiếp tục phục vụ snapshot cũ | Dữ liệu có thể chưa phản ánh refresh mới nhất | Warm/restart backend trước demo |
-| Refresh validation failure | `refresh_orbital_catalog.py` | Dừng publish, giữ artifact cũ | Runtime vẫn chạy trên snapshot cũ | Sửa nguồn/lỗi rồi rerun job |
+| Invalid payload | request parse or normalize | normalize về safe defaults | user vẫn nhận response hợp lệ | schema guardrails |
+| Empty candidate set | grounding layer | return `insufficient_evidence` | UI gợi ý nới filter | branch-safe response |
+| Dataset missing | catalog load | explicit API error | UI báo backend unavailable | artifact restore plus restart |
+| Gemini timeout | primary reasoning | route to `Groq` | user vẫn thấy council result | provider fallback |
+| Groq fail sau Gemini fail | fallback reasoning | deterministic-safe response | user thấy degraded but usable result | emergency safe branch |
+| Refresh failure | offline data job | giữ snapshot cũ | runtime vẫn sống | publish guard |
 
-### Failure containment model
-- Refresh failure được cô lập trong data update path; runtime loop tiếp tục phục vụ artifact cũ hợp lệ.
-- Runtime decision failure degrade về `insufficient_evidence` hoặc explicit API error có nguyên nhân.
-- Client rendering được bảo vệ bởi stable response keyset cho mọi mission status.
-- Auxiliary endpoint failure không chặn main council loop (`POST /api/council/respond`).
+## 11) Observability signals
 
-## 8) Observability and operational signals
+### Runtime fields to log
 
-### Runtime signals
-- Structured fields: `request_id`, `mode`, `candidate_count`, `mission_status`, `latency_ms`.
-- Endpoint health: success rate của `/api/council/respond`, tỷ lệ `insufficient_evidence` theo mode.
-- Render health: số request fail ở client và retry count.
+- `request_id`
+- `mode`
+- `selected_planet_id`
+- `candidate_count`
+- `mission_status`
+- `provider_path`
+- `latency_ms`
+- `grounding_ms`
+- `reasoning_ms`
 
-### Refresh job signals
-- `job_status` (`success`/`failed`)
-- `input_rows`, `published_rows`
-- `artifact_timestamp` (`refreshed_at_utc`)
-- `duration_ms`
+### Refresh fields to log
+
+- `job_start`
+- `job_end`
+- `published_rows`
+- `artifact_timestamp`
+- `status`
 - `failure_reason`
 
-### Demo health indicators
-- Catalog artifact age trong ngưỡng chấp nhận trước live run.
-- Smoke endpoints đều pass.
-- Council loop trả contract ổn định qua các mode.
+### Demo dashboard signals worth watching
 
-## 9) Performance targets and SLOs
+- council endpoint success rate,
+- fallback activation rate,
+- percentage of `insufficient_evidence`,
+- median response time in rehearsal,
+- artifact age before live demo.
 
-- Parse + normalize budget: < 30ms.
-- Ranking budget (`<= 900` runtime objects): < 120ms.
-- Response compose budget: < 20ms.
-- `POST /api/council/respond` p95: < 1200ms (local demo).
-- Catalog assumption: runtime object set được giới hạn để giữ latency ổn định.
+## 12) SLO and performance targets
 
-### Assumption boundaries
+### Runtime targets
 
-| Boundary | Statement |
-|---|---|
-| Guaranteed | Council endpoint giữ stable contract keys ở mọi branch; runtime council loop không phụ thuộc network/model provider. |
-| Assumed | Catalog size duy trì trong giới hạn mục tiêu demo; refresh hoàn tất trước phiên demo; Unity chỉ phụ thuộc vào stable keys. |
-| Out of scope | Multi-instance scaling, distributed failover, continuous streaming refresh. |
+- `POST /api/council/respond` p95 on primary path: `< 1500ms`
+- fallback path p95: `< 900ms`
+- deterministic grounding p95: `< 120ms`
+- FE update after response: `< 150ms`
 
-## 10) Quality gates and demo readiness
+### Reliability targets
+
+- council endpoint error rate: `< 1%` trong demo session
+- branch-safe response coverage: `100%` cho no-candidate path
+- contract keyset drift: `0`
+
+### Data targets
+
+- catalog artifact loaded successfully before live demo
+- artifact timestamp nằm trong demo window chấp nhận được
+
+## 13) Quality gates before judges touch the build
 
 ### Required checks
-- Unit tests: `test_council_orchestrator.py` pass.
-- API smoke checks pass:
-- `GET /api/orbital-objects`
-- `GET /api/orbital-meta`
-- `GET /api/planet/<planet_id>`
-- `POST /api/council/respond`
-- Contract checks pass cho cả 3 statuses.
-- Fallback path verified (`insufficient_evidence`).
-- No-candidate path verified trên UI.
-- Latency trong target rehearsal.
 
-### Definition of ready
-- Dataset artifact hợp lệ và timestamp mới.
-- Main council loop stable qua `sandbox/challenge/discovery`.
-- Rehearsal cuối cùng pass end-to-end không crash.
+1. `test_council_orchestrator.py` pass.
+2. `GET /api/orbital-objects` smoke pass.
+3. `GET /api/orbital-meta` smoke pass.
+4. `GET /api/planet/<planet_id>` smoke pass.
+5. `POST /api/council/respond` smoke pass.
+6. `candidate_found` branch verified.
+7. `candidate_with_risk` branch verified.
+8. `insufficient_evidence` branch verified.
+9. Primary path rehearsal with `Gemini`.
+10. Fallback rehearsal with forced `Groq`.
 
-### Verification mapping
+### Definition of demo-ready
 
-| Concern | Verified by |
-|---|---|
-| Branch correctness | `test_council_orchestrator.py` |
-| Contract stability | request/response contract checks |
-| Dataset validity | refresh validation trước publish artifact |
-| Runtime readiness | API smoke checks + rehearsal pass |
-| Performance target | latency verification theo demo SLO |
+- artifact mới đã publish,
+- council loop ổn định,
+- fallback path hoạt động,
+- console render sạch,
+- latency trong target,
+- final walkthrough không crash.
 
-## 11) Rollback and recovery
+## 14) Rollback and recovery
 
-### Refresh rollback
-- Nếu refresh job fail: không publish artifact mới, giữ snapshot cũ.
-- Nếu artifact mới gây lỗi runtime: restore snapshot trước đó và restart service.
+### Data rollback
 
-### Stale artifact behavior
-- Hệ thống ưu tiên availability: tiếp tục phục vụ artifact gần nhất còn hợp lệ.
-- Ghi cảnh báo để đội vận hành quyết định rerun refresh.
+- refresh fail -> không publish artifact mới
+- artifact mới lỗi -> restore snapshot trước đó
+- runtime reload bằng artifact cũ
 
-### Safe degraded operation
-- Khi candidate rỗng hoặc context xấu, system degrade sang `insufficient_evidence` có hướng dẫn hành động.
-- Mục tiêu: không để user gặp hard failure trong demo path.
+### Runtime recovery
 
-## 12) Conclusion
+- primary provider lỗi -> fallback provider
+- cả hai provider path không usable -> deterministic-safe response
+- FE không reload toàn trang nếu council path thất bại một lần; cho user retry từ chính interaction hiện tại
 
-Pipeline hiện tại được tối ưu cho demo-first execution: data refresh có guardrails, runtime council loop deterministic và có fallback rõ, observability đủ để phát hiện lỗi sớm, và quality gates đủ chặt để vào phiên chấm với rủi ro kiểm soát được.
+### Demo-day recovery playbook
+
+1. Check artifact age.
+2. Check council endpoint.
+3. Force one fallback rehearsal.
+4. Clear only stale UI state nếu cần.
+5. Không rerun full refresh sát giờ chấm nếu artifact hiện tại đang ổn định.
+
+## 15) Final execution claim
+
+Pipeline của Atlas Orrery không được viết để "đủ dùng". Nó được viết để vào phòng chấm với tâm thế tấn công: dữ liệu đã khóa, council loop đã có đường primary và đường sống sót, mọi branch đều có user-safe outcome, và AI nằm đúng chỗ phải nằm là trung tâm của runtime intelligence. Đó là pipeline của một đội thi đi để thắng, không phải pipeline của một prototype xin thông cảm.

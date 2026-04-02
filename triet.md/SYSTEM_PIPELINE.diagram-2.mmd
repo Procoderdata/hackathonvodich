@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant P as Player
+    participant FE as CommandCenterPage.jsx
+    participant API as Flask council endpoint
+    participant SC as MissionContext normalization
+    participant GRD as Grounding tools
+    participant GM as Gemini
+    participant GQ as Groq fallback
+    participant ASM as Response assembly
+    participant UI as Console and mission UI
+
+    P->>FE: scan or filter or select target
+    FE->>API: POST mission_context_packet
+    API->>SC: sanitize plus normalize
+    SC-->>API: typed MissionContext
+    API->>GRD: rank candidates plus build evidence packet
+    GRD-->>API: grounded context
+    API->>GM: reasoning request
+    alt Gemini timeout or unavailable
+        API->>GQ: same grounded context
+        GQ-->>API: fallback reasoning
+    else Gemini success
+        GM-->>API: primary reasoning
+    end
+    API->>ASM: contract-safe synthesis
+    ASM-->>FE: council_response_package
+    FE-->>UI: render headline votes options highlight

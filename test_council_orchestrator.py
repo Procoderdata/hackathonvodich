@@ -30,8 +30,15 @@ def test_generate_council_response_candidate_found():
 
     assert response["mission_status"] in {"candidate_found", "candidate_with_risk"}
     assert response["primary_recommendation"]["target_id"]
-    assert len(response["council_votes"]) == 3
+    assert len(response["council_votes"]) == 4
+    assert [vote["agent"] for vote in response["council_votes"]] == [
+        "Navigator",
+        "Astrobiologist",
+        "Climate",
+        "Archivist",
+    ]
     assert "evidence_summary" in response
+    assert "risk_flags" in response["evidence_summary"]
 
 
 def test_generate_council_response_insufficient_evidence():

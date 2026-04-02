@@ -1,0 +1,601 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <base href="file:///Users/nhokprovip/Documents/nasa hackathon/triet.md/" />
+  <style>
+@page { size: A4 landscape; margin: 20mm; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  color: #111;
+  font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.42;
+}
+h1, h2, h3, h4 {
+  break-after: avoid-page;
+  page-break-after: avoid;
+}
+h1 { font-size: 26px; margin: 0 0 8px; }
+h2 { font-size: 18px; margin: 18px 0 8px; border-bottom: 1px solid #d9d9d9; padding-bottom: 4px; }
+h3 { font-size: 14px; margin: 14px 0 6px; }
+p, li { font-size: 11px; margin: 0 0 7px; }
+ul, ol { margin: 0 0 8px 18px; }
+blockquote {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 4px solid #0c8f73;
+  background: #f4fbf9;
+}
+code, pre { font-family: "JetBrains Mono", Consolas, "SFMono-Regular", monospace; }
+pre {
+  font-size: 9.6px;
+  line-height: 1.4;
+  background: #f7f7f7;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  padding: 10px;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+code { font-size: 9.6px; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+  font-size: 9.8px;
+}
+th, td {
+  border: 1px solid #cfcfcf;
+  padding: 5px 7px;
+  vertical-align: top;
+}
+th { background: #f0f0f0; }
+img { max-width: 100%; }
+.diagram-wrap {
+  margin: 10px 0 14px;
+  padding: 8px;
+  border: 1px solid #dddddd;
+  border-radius: 6px;
+  background: #fff;
+  text-align: center;
+  break-inside: avoid-page;
+  page-break-inside: avoid;
+}
+.diagram-wrap img {
+  display: block;
+  margin: 0 auto;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 140mm;
+}
+</style>
+</head>
+<body>
+<h1>Atlas Orrery - System Pipeline</h1>
+<blockquote>
+<p>Đây là execution playbook của Atlas Orrery. Nếu <code>filemoi.md</code> trả lời câu hỏi "hệ thống được dựng như thế nào", thì file này trả lời câu hỏi quan trọng hơn với một đội đi thi hackathon: "hệ thống sẽ sống, phản ứng, chịu lỗi, và thắng buổi demo như thế nào".</p>
+</blockquote>
+<h2>What this document proves</h2>
+<ul>
+<li>Dữ liệu đi từ NASA-derived artifact tới UI theo một đường ống rõ ràng, có checkpoint, có rollback.</li>
+<li>Runtime council loop không phải một đống lời hứa; nó là một chuỗi bước có budget, có guardrails, có fallback.</li>
+<li><code>Gemini</code> xuất hiện ở đúng bước tạo intelligence, còn <code>Groq</code> đứng sẵn để giữ nhịp nếu primary path có vấn đề.</li>
+<li>Mọi branch quan trọng đều có user-safe outcome: <code>candidate_found</code>, <code>candidate_with_risk</code>, <code>insufficient_evidence</code>, hoặc API error có thể giải thích.</li>
+<li>Đội thi có thể rehearsal, đo latency, kiểm tra contract, và khóa trạng thái demo trước giờ chấm.</li>
+</ul>
+<h2>1) Pipeline philosophy</h2>
+<p>Atlas Orrery theo 4 nguyên tắc vận hành:</p>
+<ol>
+<li>
+<p><code>No fake science</code>
+   - Không bịa dữ liệu.
+   - Không để model nói vượt evidence packet.</p>
+</li>
+<li>
+<p><code>No dead-end UX</code>
+   - Candidate rỗng không được biến thành crash.
+   - Council phải luôn trả về next action có ích.</p>
+</li>
+<li>
+<p><code>No single-provider fragility</code>
+   - <code>Gemini</code> là primary path.
+   - <code>Groq</code> là fallback path.</p>
+</li>
+<li>
+<p><code>No free-form render debt</code>
+   - UI chỉ render structured payload.
+   - Mọi branch đều giữ stable response contract.</p>
+</li>
+</ol>
+<h2>2) End-to-end system pipeline</h2>
+<div class="diagram-wrap"><img src="SYSTEM_PIPELINE.diagram-1.svg" alt="Diagram 1" /></div>
+
+<p>Pipeline này được thiết kế để answer một câu hỏi rất thực tế: nếu giám khảo chạm vào app trong đúng 90 giây quan trọng nhất, system có đủ lực để phản hồi như một sản phẩm hoàn chỉnh hay không.</p>
+<h2>3) Pipeline A - Offline data supply chain</h2>
+<h3>Objective</h3>
+<p>Biến raw NASA-derived data thành runtime artifact sạch, ổn định, có lineage, đủ nhẹ để phục vụ local demo environment.</p>
+<h3>Trigger modes</h3>
+<ul>
+<li>Manual trigger:</li>
+<li>
+<p><code>python scripts/refresh_orbital_catalog.py</code></p>
+</li>
+<li>
+<p>Scheduled trigger:</p>
+</li>
+<li><code>python scripts/install_nightly_refresh_launchd.py --hour 2 --minute 15</code></li>
+</ul>
+<h3>Inputs</h3>
+<ul>
+<li>NASA Exoplanet Archive TAP query result.</li>
+<li>Required orbital and science fields:</li>
+<li><code>pl_name</code></li>
+<li><code>hostname</code></li>
+<li><code>pl_orbper</code></li>
+<li><code>pl_orbsmax</code></li>
+<li><code>pl_orbeccen</code></li>
+<li><code>pl_orbtper</code></li>
+<li><code>pl_tranmid</code></li>
+<li><code>pl_rade</code></li>
+<li><code>pl_eqt</code></li>
+<li><code>pl_insol</code></li>
+<li><code>sy_dist</code></li>
+<li><code>ra</code></li>
+<li><code>dec</code></li>
+</ul>
+<h3>Step-by-step execution</h3>
+<ol>
+<li>Start refresh job.</li>
+<li>Fetch raw dataset from TAP endpoint.</li>
+<li>Parse CSV into dataframe.</li>
+<li>Coerce numeric columns with safe conversion.</li>
+<li>Dedupe rows by planet identity.</li>
+<li>Validate required columns.</li>
+<li>Drop rows missing orbital minimums như <code>pl_orbper</code> hoặc <code>pl_orbsmax</code>.</li>
+<li>Apply sanity trimming để loại các record không thể hỗ trợ runtime demo.</li>
+<li>Sort and cap to runtime-friendly size.</li>
+<li>Publish:
+   - <code>data/orbital_elements.csv</code>
+   - <code>data/orbital_elements.meta.json</code></li>
+<li>Mark artifact ready for runtime load.</li>
+</ol>
+<h3>Output artifacts</h3>
+<ul>
+<li><code>data/orbital_elements.csv</code></li>
+<li><code>data/orbital_elements.meta.json</code></li>
+</ul>
+<h3>Meta payload should include</h3>
+<ul>
+<li><code>source</code></li>
+<li><code>refreshed_at_utc</code></li>
+<li><code>rows</code></li>
+<li><code>columns</code></li>
+<li><code>solver</code></li>
+<li><code>epoch_policy</code></li>
+<li>optional <code>query_fingerprint</code></li>
+</ul>
+<h3>Failure policy</h3>
+<ul>
+<li>Fetch fail: abort refresh, giữ artifact cũ.</li>
+<li>Validation fail: không publish bản mới.</li>
+<li>Publish fail: không làm bẩn snapshot đang chạy.</li>
+<li>Runtime vẫn tiếp tục phục vụ bản catalog gần nhất còn hợp lệ.</li>
+</ul>
+<h3>Why this matters in hackathon terms</h3>
+<p>Đội thi không thắng bằng câu "lúc nãy data hơi lỗi". Chúng tôi cần một artifact pipeline đủ cứng để dữ liệu không trở thành thứ phá hỏng demo.</p>
+<h2>4) Pipeline B - Runtime mission turn</h2>
+<h3>Objective</h3>
+<p>Chuyển một thao tác của người chơi thành một council response có trọng lượng khoa học, có AI reasoning, có next action, và render được ngay trên UI.</p>
+<h3>Trigger examples</h3>
+<ul>
+<li>đổi filter radius,</li>
+<li>đổi period band,</li>
+<li>bắt đầu <code>grid scan</code>,</li>
+<li>bắt đầu <code>spiral scan</code>,</li>
+<li>chọn một target cụ thể,</li>
+<li>mở dossier để hỏi "why this one?".</li>
+</ul>
+<h3>Runtime sequence</h3>
+<div class="diagram-wrap"><img src="SYSTEM_PIPELINE.diagram-2.svg" alt="Diagram 2" /></div>
+
+<h3>Step-by-step execution</h3>
+<ol>
+<li>Player performs an action.</li>
+<li>Frontend captures local mission state.</li>
+<li>Frontend builds <code>mission_context_packet</code>.</li>
+<li>Frontend sends <code>POST /api/council/respond</code>.</li>
+<li>Backend parses JSON bằng safe mode.</li>
+<li><code>MissionContext.from_payload</code> normalizes:
+   - mode,
+   - filters,
+   - challenge state,
+   - recent actions.</li>
+<li>Grounding layer runs:
+   - rank targets,
+   - compute baseline score,
+   - select primary candidate,
+   - build evidence summary,
+   - identify caution flags.</li>
+<li>Orchestrator creates a model-ready grounded council brief.</li>
+<li><code>Gemini</code> receives the grounded brief and performs reasoning.</li>
+<li>Nếu <code>Gemini</code> không đạt timeout budget hoặc provider path lỗi, orchestrator chuyển sang <code>Groq</code>.</li>
+<li>Response assembly merges:
+   - deterministic evidence,
+   - reasoning output,
+   - branch status,
+   - player options,
+   - discovery log line.</li>
+<li>Frontend renders:
+   - headline,
+   - support and caution votes,
+   - primary action,
+   - highlight target in scene.</li>
+</ol>
+<h3>Runtime budgets</h3>
+<ul>
+<li>FE state aggregation: <code>&lt; 20ms</code></li>
+<li>request parse and normalization: <code>&lt; 30ms</code></li>
+<li>deterministic grounding: <code>&lt; 120ms</code></li>
+<li>primary reasoning target: <code>&lt; 1100ms</code></li>
+<li>fallback reasoning target: <code>&lt; 700ms</code></li>
+<li>response assembly: <code>&lt; 20ms</code></li>
+<li>FE render after response: <code>&lt; 150ms</code></li>
+</ul>
+<h2>5) Pipeline C - Deterministic grounding before AI</h2>
+<p>Đây là bước khiến AI layer trở nên đáng tin.</p>
+<h3>Inputs</h3>
+<ul>
+<li>normalized mission context,</li>
+<li>current orbital catalog,</li>
+<li>selected target if any,</li>
+<li>current filter band,</li>
+<li>recent actions.</li>
+</ul>
+<h3>Grounding outputs</h3>
+<ul>
+<li>ranked candidate list,</li>
+<li>primary candidate,</li>
+<li>baseline score,</li>
+<li>evidence summary,</li>
+<li>caution flags,</li>
+<li>branch hint (<code>candidate possible</code> hay <code>insufficient_evidence</code>).</li>
+</ul>
+<h3>Deterministic tasks that must happen before any model call</h3>
+<ol>
+<li>Validate filter ranges.</li>
+<li>Apply candidate filter.</li>
+<li>Compute baseline habitability score.</li>
+<li>Sort and truncate candidate list.</li>
+<li>Resolve selected target nếu user đã click trước đó.</li>
+<li>Produce evidence packet.</li>
+<li>Mark explicit caution nếu dữ liệu thiếu hoặc orbital risk cao.</li>
+</ol>
+<h3>Why this ordering is non-negotiable</h3>
+<p>Nếu model reason trước khi grounding xong, toàn bộ system sẽ trượt về kiểu chatbot "nói hay nhưng không khóa được khoa học". Chúng tôi không chấp nhận điều đó.</p>
+<h2>6) Pipeline D - AI council reasoning</h2>
+<h3>Objective</h3>
+<p>Biến grounded scientific packet thành một hội đồng có tiếng nói, có disagreement, và có recommendation đủ mạnh để tạo wow factor.</p>
+<h3>Council roles</h3>
+<ul>
+<li><code>Navigator</code></li>
+<li>ưu tiên candidate tiếp theo,</li>
+<li>
+<p>chọn action phù hợp cho mission.</p>
+</li>
+<li>
+<p><code>Astrobiologist</code></p>
+</li>
+<li>
+<p>nhìn vào viability và habitability.</p>
+</li>
+<li>
+<p><code>Climate/Orbital Agent</code></p>
+</li>
+<li>đóng vai phản biện,</li>
+<li>
+<p>nêu risk và uncertainty.</p>
+</li>
+<li>
+<p><code>Archivist</code></p>
+</li>
+<li>biến kết quả thành log line đủ sáng sủa để người chơi hiểu ngay.</li>
+</ul>
+<h3>Model request composition</h3>
+<p>Model request không phải raw user text. Nó là một packet đã được kiểm soát, thường gồm:</p>
+<ul>
+<li>mode,</li>
+<li>player goal,</li>
+<li>selected target,</li>
+<li>top candidates,</li>
+<li>evidence summary,</li>
+<li>risk flags,</li>
+<li>response schema instruction,</li>
+<li>tone directive cho Science Council.</li>
+</ul>
+<h3>Gemini primary path</h3>
+<p><code>Gemini</code> được dùng để:</p>
+<ul>
+<li>reason đa bước trên evidence,</li>
+<li>tạo council debate,</li>
+<li>tổng hợp recommendation có cấu trúc,</li>
+<li>viết narrative đủ mạnh cho hackathon demo.</li>
+</ul>
+<h3>Groq fallback path</h3>
+<p><code>Groq</code> được gọi khi:</p>
+<ul>
+<li><code>Gemini</code> timeout,</li>
+<li>provider unavailable,</li>
+<li>quota issue,</li>
+<li>latency vượt demo budget.</li>
+</ul>
+<h3>Fallback invariants</h3>
+<ul>
+<li>cùng grounded packet,</li>
+<li>cùng output schema,</li>
+<li>cùng branch semantics,</li>
+<li>không cho phép fallback trả về response shape khác.</li>
+</ul>
+<h3>Safe degraded outcome</h3>
+<p>Nếu cả 2 provider path đều không usable:</p>
+<ul>
+<li>không được crash endpoint,</li>
+<li>system phải trả deterministic-safe branch,</li>
+<li>headline và options vẫn phải đủ để người dùng tiếp tục thao tác.</li>
+</ul>
+<h2>7) Pipeline E - Branch behavior</h2>
+<h3>Branch 1: <code>candidate_found</code></h3>
+<p>Condition:</p>
+<ul>
+<li>candidate list không rỗng,</li>
+<li>risk không đủ mạnh để nâng thành caution-heavy branch.</li>
+</ul>
+<p>Expected response:</p>
+<ul>
+<li>headline mạnh, rõ target,</li>
+<li><code>primary_recommendation.target_id</code> có giá trị,</li>
+<li>council votes nghiêng support,</li>
+<li>player options hướng tới hành động tiếp theo.</li>
+</ul>
+<p>UI effect:</p>
+<ul>
+<li>mission panel đẩy target nổi bật,</li>
+<li>console log thể hiện sự đồng thuận.</li>
+</ul>
+<h3>Branch 2: <code>candidate_with_risk</code></h3>
+<p>Condition:</p>
+<ul>
+<li>candidate list không rỗng,</li>
+<li>có risk signals hoặc caution vote đáng kể.</li>
+</ul>
+<p>Expected response:</p>
+<ul>
+<li>headline vẫn thúc đẩy action,</li>
+<li>nhưng phải kéo theo warning rõ ràng,</li>
+<li>votes gồm cả support và caution.</li>
+</ul>
+<p>UI effect:</p>
+<ul>
+<li>tạo cảm giác debate thật,</li>
+<li>không làm system lưỡng lự kiểu "không biết nói gì",</li>
+<li>khuyến khích user đào sâu thay vì bỏ cuộc.</li>
+</ul>
+<h3>Branch 3: <code>insufficient_evidence</code></h3>
+<p>Condition:</p>
+<ul>
+<li>filter band quá chặt,</li>
+<li>selected target không còn hợp lệ,</li>
+<li>candidate list rỗng sau grounding.</li>
+</ul>
+<p>Expected response:</p>
+<ul>
+<li><code>mission_status=insufficient_evidence</code>,</li>
+<li><code>primary_recommendation.action=widen_filters</code>,</li>
+<li><code>player_options</code> là đường thoát cụ thể.</li>
+</ul>
+<p>UI effect:</p>
+<ul>
+<li>tuyệt đối không dead-end,</li>
+<li>user vẫn cảm thấy council có hướng dẫn chứ không chỉ báo lỗi.</li>
+</ul>
+<h2>8) Pipeline F - UI rendering and mission update</h2>
+<h3>What frontend must do</h3>
+<ol>
+<li>Append headline vào console.</li>
+<li>Append support and caution votes.</li>
+<li>Update recommendation panel.</li>
+<li>Highlight target in orrery nếu có target.</li>
+<li>Preserve newest valid response only.</li>
+</ol>
+<h3>Render rules</h3>
+<ul>
+<li><code>headline</code> -&gt; command line</li>
+<li>support vote -&gt; info line</li>
+<li>caution vote -&gt; warning line</li>
+<li>no model-specific render branch</li>
+</ul>
+<h3>UI protection rules</h3>
+<ul>
+<li>response cũ đến muộn không được overwrite response mới hơn,</li>
+<li>branch <code>insufficient_evidence</code> vẫn phải render đầy đủ,</li>
+<li>FE không parse free-form essay để suy đoán UI behavior.</li>
+</ul>
+<h2>9) Pipeline G - Challenge mode specifics</h2>
+<p>Atlas Orrery không chỉ có discovery mode. Trong hackathon framing, challenge mode là nơi AI bắt đầu giống một mission director thay vì chỉ là advisor.</p>
+<h3>Challenge mode loop</h3>
+<ol>
+<li>Generate objective.</li>
+<li>Track player actions.</li>
+<li>Evaluate progress deterministically.</li>
+<li>Feed progress plus scientific state vào council turn.</li>
+<li>Council trả hint, escalation, hoặc confirmation.</li>
+</ol>
+<h3>Deterministic core must own</h3>
+<ul>
+<li>objective validity,</li>
+<li>progress calculation,</li>
+<li>win/loss state,</li>
+<li>scoring.</li>
+</ul>
+<h3>AI layer should own</h3>
+<ul>
+<li>hint phrasing,</li>
+<li>urgency,</li>
+<li>scientific narrative,</li>
+<li>next-step recommendation.</li>
+</ul>
+<h2>10) Error taxonomy and containment</h2>
+<table>
+<thead>
+<tr>
+<th>Failure type</th>
+<th>Where it appears</th>
+<th>System behavior</th>
+<th>User-facing outcome</th>
+<th>Containment strategy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Invalid payload</td>
+<td>request parse or normalize</td>
+<td>normalize về safe defaults</td>
+<td>user vẫn nhận response hợp lệ</td>
+<td>schema guardrails</td>
+</tr>
+<tr>
+<td>Empty candidate set</td>
+<td>grounding layer</td>
+<td>return <code>insufficient_evidence</code></td>
+<td>UI gợi ý nới filter</td>
+<td>branch-safe response</td>
+</tr>
+<tr>
+<td>Dataset missing</td>
+<td>catalog load</td>
+<td>explicit API error</td>
+<td>UI báo backend unavailable</td>
+<td>artifact restore plus restart</td>
+</tr>
+<tr>
+<td>Gemini timeout</td>
+<td>primary reasoning</td>
+<td>route to <code>Groq</code></td>
+<td>user vẫn thấy council result</td>
+<td>provider fallback</td>
+</tr>
+<tr>
+<td>Groq fail sau Gemini fail</td>
+<td>fallback reasoning</td>
+<td>deterministic-safe response</td>
+<td>user thấy degraded but usable result</td>
+<td>emergency safe branch</td>
+</tr>
+<tr>
+<td>Refresh failure</td>
+<td>offline data job</td>
+<td>giữ snapshot cũ</td>
+<td>runtime vẫn sống</td>
+<td>publish guard</td>
+</tr>
+</tbody>
+</table>
+<h2>11) Observability signals</h2>
+<h3>Runtime fields to log</h3>
+<ul>
+<li><code>request_id</code></li>
+<li><code>mode</code></li>
+<li><code>selected_planet_id</code></li>
+<li><code>candidate_count</code></li>
+<li><code>mission_status</code></li>
+<li><code>provider_path</code></li>
+<li><code>latency_ms</code></li>
+<li><code>grounding_ms</code></li>
+<li><code>reasoning_ms</code></li>
+</ul>
+<h3>Refresh fields to log</h3>
+<ul>
+<li><code>job_start</code></li>
+<li><code>job_end</code></li>
+<li><code>published_rows</code></li>
+<li><code>artifact_timestamp</code></li>
+<li><code>status</code></li>
+<li><code>failure_reason</code></li>
+</ul>
+<h3>Demo dashboard signals worth watching</h3>
+<ul>
+<li>council endpoint success rate,</li>
+<li>fallback activation rate,</li>
+<li>percentage of <code>insufficient_evidence</code>,</li>
+<li>median response time in rehearsal,</li>
+<li>artifact age before live demo.</li>
+</ul>
+<h2>12) SLO and performance targets</h2>
+<h3>Runtime targets</h3>
+<ul>
+<li><code>POST /api/council/respond</code> p95 on primary path: <code>&lt; 1500ms</code></li>
+<li>fallback path p95: <code>&lt; 900ms</code></li>
+<li>deterministic grounding p95: <code>&lt; 120ms</code></li>
+<li>FE update after response: <code>&lt; 150ms</code></li>
+</ul>
+<h3>Reliability targets</h3>
+<ul>
+<li>council endpoint error rate: <code>&lt; 1%</code> trong demo session</li>
+<li>branch-safe response coverage: <code>100%</code> cho no-candidate path</li>
+<li>contract keyset drift: <code>0</code></li>
+</ul>
+<h3>Data targets</h3>
+<ul>
+<li>catalog artifact loaded successfully before live demo</li>
+<li>artifact timestamp nằm trong demo window chấp nhận được</li>
+</ul>
+<h2>13) Quality gates before judges touch the build</h2>
+<h3>Required checks</h3>
+<ol>
+<li><code>test_council_orchestrator.py</code> pass.</li>
+<li><code>GET /api/orbital-objects</code> smoke pass.</li>
+<li><code>GET /api/orbital-meta</code> smoke pass.</li>
+<li><code>GET /api/planet/&lt;planet_id&gt;</code> smoke pass.</li>
+<li><code>POST /api/council/respond</code> smoke pass.</li>
+<li><code>candidate_found</code> branch verified.</li>
+<li><code>candidate_with_risk</code> branch verified.</li>
+<li><code>insufficient_evidence</code> branch verified.</li>
+<li>Primary path rehearsal with <code>Gemini</code>.</li>
+<li>Fallback rehearsal with forced <code>Groq</code>.</li>
+</ol>
+<h3>Definition of demo-ready</h3>
+<ul>
+<li>artifact mới đã publish,</li>
+<li>council loop ổn định,</li>
+<li>fallback path hoạt động,</li>
+<li>console render sạch,</li>
+<li>latency trong target,</li>
+<li>final walkthrough không crash.</li>
+</ul>
+<h2>14) Rollback and recovery</h2>
+<h3>Data rollback</h3>
+<ul>
+<li>refresh fail -&gt; không publish artifact mới</li>
+<li>artifact mới lỗi -&gt; restore snapshot trước đó</li>
+<li>runtime reload bằng artifact cũ</li>
+</ul>
+<h3>Runtime recovery</h3>
+<ul>
+<li>primary provider lỗi -&gt; fallback provider</li>
+<li>cả hai provider path không usable -&gt; deterministic-safe response</li>
+<li>FE không reload toàn trang nếu council path thất bại một lần; cho user retry từ chính interaction hiện tại</li>
+</ul>
+<h3>Demo-day recovery playbook</h3>
+<ol>
+<li>Check artifact age.</li>
+<li>Check council endpoint.</li>
+<li>Force one fallback rehearsal.</li>
+<li>Clear only stale UI state nếu cần.</li>
+<li>Không rerun full refresh sát giờ chấm nếu artifact hiện tại đang ổn định.</li>
+</ol>
+<h2>15) Final execution claim</h2>
+<p>Pipeline của Atlas Orrery không được viết để "đủ dùng". Nó được viết để vào phòng chấm với tâm thế tấn công: dữ liệu đã khóa, council loop đã có đường primary và đường sống sót, mọi branch đều có user-safe outcome, và AI nằm đúng chỗ phải nằm là trung tâm của runtime intelligence. Đó là pipeline của một đội thi đi để thắng, không phải pipeline của một prototype xin thông cảm.</p>
+</body>
+</html>

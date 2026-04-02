@@ -1,43 +1,43 @@
 flowchart TB
-    subgraph CLIENT[React/Three.js Client]
+    subgraph CLIENT[React plus Three.js Client]
       C1[CommandCenterPage.jsx]
-      C2[GalaxyCanvas plus OrreryEngine.js]
-      C3[ConsolePanel plus MissionControl]
-      C4[Browser fetch plus local session state]
+      C2[GalaxyCanvas.jsx plus OrreryEngine.js]
+      C3[ConsolePanel.jsx plus MissionControl.jsx]
+      C4[Browser fetch plus local mission state]
     end
 
-    subgraph API[Flask API]
+    subgraph API[Flask API Boundary]
       A1[POST /api/council/respond]
       A2[GET /api/orbital-objects]
       A3[GET /api/orbital-meta]
       A4[GET /api/planets]
-      A5[GET /api/planet planet_id]
+      A5[GET /api/planet/<planet_id>]
       A6[GET /api/piz-zones]
     end
 
     subgraph AI[AI Council Layer]
-      L1[council_orchestrator.py]
-      L2[Gemini reasoning engine primary]
-      L3[Groq fallback path]
-      L4[Structured response assembly]
+      I1[council_orchestrator.py]
+      I2[Gemini primary reasoning path]
+      I3[Groq fallback reasoning path]
+      I4[Structured council synthesis]
     end
 
     subgraph CORE[Deterministic Grounding Layer]
       G1[council_schemas.py]
       G2[council_tools.py]
-      G3[Evidence summary plus guardrails]
+      G3[Evidence packet plus guardrails]
     end
 
-    subgraph DATA[Data Layer]
+    subgraph DATA[Scientific Data Layer]
       D1[data/orbital_elements.csv]
       D2[data/orbital_elements.meta.json]
       D3[data/TOI_2025.10.02_08.11.35.csv]
     end
 
-    subgraph OPS[DataOps]
+    subgraph OPS[DataOps and Refresh]
       O1[scripts/refresh_orbital_catalog.py]
       O2[scripts/install_nightly_refresh_launchd.py]
-      O3[logs/orbital_refresh.*.log]
+      O3[logs/orbital_refresh.out and err.log]
     end
 
     C4 --> A1
@@ -47,14 +47,14 @@ flowchart TB
     C4 --> A5
     C4 --> A6
 
-    A1 --> L1
-    L1 --> G1
-    L1 --> G2
+    A1 --> I1
+    I1 --> G1
+    I1 --> G2
     G2 --> G3
-    L1 --> L2
-    L1 --> L3
-    L2 --> L4
-    L3 --> L4
+    I1 --> I2
+    I1 --> I3
+    I2 --> I4
+    I3 --> I4
 
     A2 --> D1
     A3 --> D2

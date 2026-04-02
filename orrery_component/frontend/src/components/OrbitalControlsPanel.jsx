@@ -4,6 +4,8 @@ function OrbitalControlsPanel({
   onFilterChange,
   onTrackEnable,
   onTrackDisable,
+  onZoomIn,
+  onZoomOut,
 }) {
   const dataStatusClass = ui.dataStatus === 'LIVE' ? 'success' : 'warning';
 
@@ -25,6 +27,8 @@ function OrbitalControlsPanel({
       <div className="button-row">
         <button type="button" className="action-btn" onClick={onTrackEnable}>Track (T)</button>
         <button type="button" className="action-btn danger" onClick={onTrackDisable}>Unlock (U)</button>
+        <button type="button" className="action-btn" onClick={onZoomIn}>Zoom +</button>
+        <button type="button" className="action-btn" onClick={onZoomOut}>Zoom -</button>
       </div>
 
       <div className="filter-block">
@@ -101,6 +105,9 @@ function OrbitalControlsPanel({
 
       <div className="shortcut-note">
         Keys: <span className="info">T</span> Track, <span className="info">U</span> Unlock, <span className="info">Q/E</span> Speed -/+.
+      </div>
+      <div className="shortcut-note">
+        Mouse: <span className="info">Drag</span> orbit, <span className="info">Scroll</span> zoom, <span className="info">Click</span> target.
       </div>
     </section>
   );

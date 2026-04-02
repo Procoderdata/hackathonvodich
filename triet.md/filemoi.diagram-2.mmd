@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant U as User
+    participant FE as CommandCenterPage.jsx
+    participant API as Flask /api/council/respond
+    participant SC as MissionContext.from_payload
+    participant GRD as Grounding layer
+    participant GM as Gemini reasoning
+    participant GQ as Groq fallback
+    participant ASM as Response assembly
+    participant UI as Console plus recommendation UI
+
+    U->>FE: scan or filter or select target or ask why
+    FE->>API: POST mission_context_packet
+    API->>SC: sanitize and normalize request
+    SC-->>API: typed MissionContext
+    API->>GRD: rank targets plus build evidence packet
+    GRD-->>API: grounded candidates plus evidence summary
+    API->>GM: council reasoning on grounded packet
+    alt Gemini unavailable or too slow
+        API->>GQ: same grounded packet
+        GQ-->>API: fallback reasoning result
+    else Gemini success
+        GM-->>API: council reasoning result
+    end
+    API->>ASM: merge reasoning with stable contract
+    ASM-->>FE: council_response_package
+    FE-->>UI: render headline votes options and highlights

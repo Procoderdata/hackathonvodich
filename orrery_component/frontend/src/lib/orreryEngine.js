@@ -144,6 +144,12 @@ export class OrreryEngine {
     }
   }
 
+  notifyPizCatalog(items) {
+    if (typeof this.callbacks.onPizCatalog === 'function') {
+      this.callbacks.onPizCatalog(items);
+    }
+  }
+
   initializeScene() {
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x02060f, 0.0022);
@@ -361,21 +367,22 @@ export class OrreryEngine {
   async loadPizZones() {
     const pizData = await safeJsonFetch('/api/piz-zones');
     this.emitState({ priorityCount: pizData.length });
+    this.notifyPizCatalog(pizData);
     this.log(`Loaded ${pizData.length} Priority Investigation Zones from NASA data`, 'success');
 
     pizData.forEach((data) => {
-      const geometry = new THREE.SphereGeometry(2.2, 24, 24);
+      const geometry = new THREE.SphereGeometry(3.0, 24, 24);
       const material = new THREE.MeshBasicMaterial({
         color: 0x00aaff,
         transparent: true,
-        opacity: 0.35,
+        opacity: 0.42,
       });
 
       const sphere = new THREE.Mesh(geometry, material);
       sphere.position.set(...data.position);
       sphere.userData = { ...data, kind: 'piz' };
 
-      const glowGeometry = new THREE.SphereGeometry(2.8, 24, 24);
+      const glowGeometry = new THREE.SphereGeometry(3.8, 24, 24);
       const glowMaterial = new THREE.MeshBasicMaterial({
         color: 0x0088ff,
         transparent: true,
@@ -561,6 +568,37 @@ export class OrreryEngine {
     this.controls.target.set(0, 0, 0);
     this.emitState({ trackingTarget: 'OFF' });
     this.log('Track mode disabled. Camera target reset to command center.', 'info');
+  }
+
+  selectPizById(pizId) {
+    const id = String(pizId || '');
+    const picked = this.pizSpheres.find((item) => item.data?.id === id);
+    if (!picked) return false;
+
+    this.selectedPiz = picked;
+    this.notifyPizSelected(picked.data);
+    this.controls.target.lerp(picked.sphere.position, 0.6);
+    this.log(
+      `Selected ${picked.data.id} for investigation. Targets: ${picked.data.targets}, Priority: ${picked.data.priority}`,
+      'info'
+    );
+    return true;
+  }
+
+  zoomStep(direction = 1) {
+    if (!this.camera || !this.controls) return;
+    const sign = direction >= 0 ? 1 : -1;
+    const target = this.controls.target.clone();
+    const offset = this.camera.position.clone().sub(target);
+    const currentDistance = offset.length();
+    const step = Math.max(4, currentDistance * 0.15);
+    const maxDistance = Number(this.controls.maxDistance || 400);
+    const nextDistance = clamp(currentDistance + (sign * step), 8, maxDistance);
+
+    if (currentDistance <= 1e-6) return;
+    offset.normalize().multiplyScalar(nextDistance);
+    this.camera.position.copy(target.add(offset));
+    this.controls.update();
   }
 
   onPointerDown(event) {

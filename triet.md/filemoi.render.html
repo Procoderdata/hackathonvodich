@@ -1,0 +1,631 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <base href="file:///Users/nhokprovip/Documents/nasa hackathon/triet.md/" />
+  <style>
+@page { size: A4 portrait; margin: 20mm; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  color: #111;
+  font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.42;
+}
+h1, h2, h3, h4 {
+  break-after: avoid-page;
+  page-break-after: avoid;
+}
+h1 { font-size: 26px; margin: 0 0 8px; }
+h2 { font-size: 18px; margin: 18px 0 8px; border-bottom: 1px solid #d9d9d9; padding-bottom: 4px; }
+h3 { font-size: 14px; margin: 14px 0 6px; }
+p, li { font-size: 11px; margin: 0 0 7px; }
+ul, ol { margin: 0 0 8px 18px; }
+blockquote {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 4px solid #0c8f73;
+  background: #f4fbf9;
+}
+code, pre { font-family: "JetBrains Mono", Consolas, "SFMono-Regular", monospace; }
+pre {
+  font-size: 9.6px;
+  line-height: 1.4;
+  background: #f7f7f7;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  padding: 10px;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+code { font-size: 9.6px; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 12px;
+  font-size: 9.8px;
+}
+th, td {
+  border: 1px solid #cfcfcf;
+  padding: 5px 7px;
+  vertical-align: top;
+}
+th { background: #f0f0f0; }
+img { max-width: 100%; }
+.diagram-wrap {
+  margin: 10px 0 14px;
+  padding: 8px;
+  border: 1px solid #dddddd;
+  border-radius: 6px;
+  background: #fff;
+  text-align: center;
+  break-inside: avoid-page;
+  page-break-inside: avoid;
+}
+.diagram-wrap img {
+  display: block;
+  margin: 0 auto;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 220mm;
+}
+</style>
+</head>
+<body>
+<h1>Atlas Orrery - Technical Architecture</h1>
+<blockquote>
+<p>Đây không phải là một doc "backend có gì". Đây là technical case cho thấy Atlas Orrery là một sản phẩm AI hackathon có chủ đích: dữ liệu thật, reasoning thật, fallback thật, và một demo path đủ chắc để bước vào phòng chấm mà không run tay.</p>
+</blockquote>
+<h2>What this document proves</h2>
+<ul>
+<li>Atlas Orrery không chỉ là một orrery 3D đẹp mắt; nó là một <code>AI Science Council system</code> được đóng khung bằng architecture rõ ràng.</li>
+<li><code>Gemini</code> nằm ở đúng trung tâm của intelligence layer, không bị giấu sau một đống từ ngữ chung chung.</li>
+<li><code>Groq</code> không phải tên phụ họa trong slide; nó là fallback path có chủ đích để giữ demo continuity.</li>
+<li>Deterministic layer không cạnh tranh với AI; nó làm nhiệm vụ grounding, guardrails, scoring baseline, và contract stability.</li>
+<li>Frontend, Flask API, AI council layer, grounding layer, data layer, và DataOps tách trách nhiệm đủ rõ để đội thi có thể defend từng quyết định trước giám khảo kỹ thuật.</li>
+</ul>
+<h2>1) Architecture stance</h2>
+<p>Chúng tôi cố ý thiết kế Atlas Orrery theo hướng <code>AI-first but not AI-loose</code>.</p>
+<p>Điều đó có nghĩa là:</p>
+<ol>
+<li>Người xem phải nhìn thấy AI tạo ra giá trị ở vòng runtime chính, không phải chỉ nằm trong phần "future work".</li>
+<li>Mọi reasoning của AI phải bám vào evidence thật từ catalog thiên văn, không được phép bịa.</li>
+<li>Demo không được phép chết chỉ vì provider chính chậm hoặc lỗi.</li>
+<li>UI không parse văn bản tự do; UI chỉ render trên một contract có cấu trúc ổn định.</li>
+</ol>
+<p>Đây là architecture để thắng một buổi chấm hackathon: AI phải nổi bật, nhưng hệ thống phải đứng vững.</p>
+<h2>2) System architecture overview</h2>
+<div class="diagram-wrap"><img src="filemoi.diagram-1.svg" alt="Diagram 1" /></div>
+
+<p>Atlas Orrery dùng kiến trúc hybrid có chủ đích:</p>
+<ul>
+<li>Deterministic layer giữ phần nền: lọc candidate, chấm baseline, lấy evidence, khóa contract.</li>
+<li><code>Gemini</code> là reasoning engine chính cho Science Council: tranh luận, lập luận, ưu tiên mục tiêu, diễn giải cho người chơi.</li>
+<li><code>Groq</code> là fallback path để demo không bị phụ thuộc một provider duy nhất.</li>
+<li>Flask giữ vai trò transport boundary, không ôm prompt logic và không lẫn với scoring logic.</li>
+</ul>
+<h2>3) What the judges should understand in 30 seconds</h2>
+<p>Nếu giám khảo chỉ đọc đúng một phần của file này, họ phải nhìn ra ngay 4 ý:</p>
+<ol>
+<li>Đây là một hệ thống dữ liệu thật chạy trên NASA-derived catalog, không phải data giả để minh họa.</li>
+<li>AI không chỉ "nói chuyện"; AI thực sự ngồi ở runtime decision loop.</li>
+<li><code>Gemini</code> là primary intelligence path, còn <code>Groq</code> là fallback path để bảo vệ demo.</li>
+<li>Toàn bộ reasoning của AI bị neo vào deterministic evidence package để tránh hallucination và giữ tính kiểm chứng.</li>
+</ol>
+<h2>4) Runtime architecture</h2>
+<h3>Client layer</h3>
+<ul>
+<li><code>CommandCenterPage.jsx</code></li>
+<li>Thu user action: filter, scan pattern, chọn target, mở dossier.</li>
+<li>Gom state hiện tại thành <code>mission_context_packet</code>.</li>
+<li>Gọi <code>POST /api/council/respond</code>.</li>
+<li>
+<p>Đẩy council result vào <code>ConsolePanel</code>, recommendation card, highlight logic.</p>
+</li>
+<li>
+<p><code>GalaxyCanvas.jsx</code> + <code>OrreryEngine.js</code></p>
+</li>
+<li>Render orbital scene.</li>
+<li>Chạy orbit propagation phía client.</li>
+<li>
+<p>Quản lý tracking, scan effects, discovered targets, camera state.</p>
+</li>
+<li>
+<p><code>ConsolePanel.jsx</code></p>
+</li>
+<li>Render headline, support votes, caution votes.</li>
+<li>
+<p>Không diễn giải lại response; chỉ trình bày contract đã được backend bảo đảm.</p>
+</li>
+<li>
+<p><code>MissionControl.jsx</code></p>
+</li>
+<li>Kích hoạt <code>grid</code>, <code>spiral</code>, <code>targeted</code>.</li>
+<li>Đóng vai trò interaction surface, không dính scientific policy.</li>
+</ul>
+<h3>Flask API boundary</h3>
+<ul>
+<li><code>server.py</code> là HTTP boundary duy nhất giữa UI và council system.</li>
+<li>Flask route layer có 2 nhiệm vụ:</li>
+<li>load và phân phối catalog/object data,</li>
+<li>nhận <code>mission_context_packet</code> và chuyển vào council path.</li>
+<li>Route layer không được tự ý quyết định candidate hay rewrite scientific reasoning.</li>
+</ul>
+<h3>AI Council Layer</h3>
+<ul>
+<li><code>council_orchestrator.py</code> là nơi một council turn thực sự diễn ra.</li>
+<li>Orchestrator làm 5 việc:</li>
+<li>nhận context đã normalize,</li>
+<li>gọi grounding tools để lấy candidate + evidence package,</li>
+<li>route sang <code>Gemini</code>,</li>
+<li>fallback sang <code>Groq</code> nếu cần,</li>
+<li>đóng gói thành <code>council_response_package</code>.</li>
+</ul>
+<h3>Deterministic Grounding Layer</h3>
+<ul>
+<li><code>council_schemas.py</code></li>
+<li>normalize payload,</li>
+<li>clamp numeric ranges,</li>
+<li>ép mode về whitelist,</li>
+<li>
+<p>khóa response schema.</p>
+</li>
+<li>
+<p><code>council_tools.py</code></p>
+</li>
+<li>baseline score,</li>
+<li>rank candidates,</li>
+<li>build evidence summary,</li>
+<li>scaffold council votes,</li>
+<li>quyết định khi nào cần <code>insufficient_evidence</code>.</li>
+</ul>
+<h3>Data layer</h3>
+<ul>
+<li><code>data/orbital_elements.csv</code></li>
+<li>
+<p>runtime source of truth cho orbital catalog.</p>
+</li>
+<li>
+<p><code>data/orbital_elements.meta.json</code></p>
+</li>
+<li>
+<p>lineage, refreshed timestamp, rows, solver, epoch policy.</p>
+</li>
+<li>
+<p><code>data/TOI_2025.10.02_08.11.35.csv</code></p>
+</li>
+<li>auxiliary source cho PIZ discovery context.</li>
+</ul>
+<h3>DataOps layer</h3>
+<ul>
+<li><code>refresh_orbital_catalog.py</code></li>
+<li>lấy dữ liệu mới từ NASA TAP,</li>
+<li>validate,</li>
+<li>
+<p>publish artifact.</p>
+</li>
+<li>
+<p><code>install_nightly_refresh_launchd.py</code></p>
+</li>
+<li>cài nightly refresh cho local demo environment.</li>
+</ul>
+<h2>5) AI Council Layer</h2>
+<h3>Why this layer exists</h3>
+<p>Atlas Orrery sẽ không thắng hackathon nếu AI chỉ nằm ở caption hoặc ở phần roadmap. AI phải là trái tim của trải nghiệm. Vì vậy <code>AI Council Layer</code> không phải phần trang trí; nó là nơi dữ liệu thiên văn được biến thành một hội đồng khoa học có chính kiến.</p>
+<h3>Primary reasoning path</h3>
+<p><code>Gemini</code> là reasoning engine chính vì chúng tôi cần:</p>
+<ul>
+<li>multi-step reasoning trên grounded scientific evidence,</li>
+<li>khả năng giữ được debate tone giữa nhiều role,</li>
+<li>chuyển dữ liệu khô thành recommendation và explanation mà vẫn có cấu trúc,</li>
+<li>tạo cảm giác "Science Council" thật sự đang tranh luận trước mắt giám khảo.</li>
+</ul>
+<h3>Fallback path</h3>
+<p><code>Groq</code> tồn tại vì hackathon demo cần một thứ còn quan trọng hơn sự lý tưởng: khả năng sống sót trên sân khấu.</p>
+<p>Fallback policy:</p>
+<ol>
+<li>Orchestrator luôn chuẩn bị một grounded evidence package trước.</li>
+<li>Package đó được đưa vào <code>Gemini</code> như primary path.</li>
+<li>Nếu timeout, latency spike, quota issue, hoặc provider unavailable xảy ra, orchestrator route sang <code>Groq</code>.</li>
+<li>Kết quả từ cả hai path đều bị ép về cùng một output contract.</li>
+</ol>
+<p>Điều này biến fallback thành một chiến lược kỹ thuật rõ ràng, không phải một cái cớ sau khi hệ thống lỗi.</p>
+<h3>Hard line between AI and deterministic code</h3>
+<p>AI được phép:</p>
+<ul>
+<li>tranh luận,</li>
+<li>ưu tiên candidate,</li>
+<li>diễn giải rủi ro,</li>
+<li>đề xuất next action,</li>
+<li>tạo mission log mang tính thuyết phục.</li>
+</ul>
+<p>AI không được phép:</p>
+<ul>
+<li>bịa giá trị khoa học,</li>
+<li>vượt khỏi evidence package,</li>
+<li>tạo key mới ngoài contract,</li>
+<li>thay scoring baseline,</li>
+<li>phá branch safety của runtime.</li>
+</ul>
+<h3>Why hybrid wins</h3>
+<p>Deterministic evidence selection tạo một lớp nền mà giám khảo kỹ thuật có thể tin. <code>Gemini</code> tạo lớp intelligence mà giám khảo AI muốn thấy. <code>Groq</code> giữ demo continuity mà đội thi cần có để không sụp ở phút thứ 89. Cả ba lớp đó kết hợp mới tạo ra một submission có sức nặng thực chiến.</p>
+<h2>6) Runtime request flow</h2>
+<div class="diagram-wrap"><img src="filemoi.diagram-2.svg" alt="Diagram 2" /></div>
+
+<p>Runtime flow này có một điểm mấu chốt: <code>AI value</code> không nằm ở bước parse request hay ở bước trả JSON. AI value nằm ở bước reasoning trên grounded packet. Đó là phần phải bật lên khi giám khảo đọc sơ đồ.</p>
+<h2>7) Code map and dependency direction</h2>
+<h3>Frontend anchors</h3>
+<ul>
+<li><code>orrery_component/frontend/src/pages/CommandCenterPage.jsx</code></li>
+<li>owns council request trigger,</li>
+<li>owns FE state aggregation,</li>
+<li>
+<p>owns log append and mission action wiring.</p>
+</li>
+<li>
+<p><code>orrery_component/frontend/src/lib/orreryEngine.js</code></p>
+</li>
+<li>owns orbit propagation,</li>
+<li>owns scene state,</li>
+<li>
+<p>owns visual tracking and discovery interactions.</p>
+</li>
+<li>
+<p><code>orrery_component/frontend/src/components/ConsolePanel.jsx</code></p>
+</li>
+<li>
+<p>owns council output presentation.</p>
+</li>
+<li>
+<p><code>orrery_component/frontend/src/components/MissionControl.jsx</code></p>
+</li>
+<li>owns scan command surface.</li>
+</ul>
+<h3>Backend anchors</h3>
+<ul>
+<li><code>server.py</code></li>
+<li>owns HTTP boundary,</li>
+<li>owns data loading,</li>
+<li>
+<p>owns endpoint dispatch.</p>
+</li>
+<li>
+<p><code>council_orchestrator.py</code></p>
+</li>
+<li>owns council turn orchestration,</li>
+<li>owns provider routing,</li>
+<li>owns disagreement resolution,</li>
+<li>
+<p>owns final response assembly.</p>
+</li>
+<li>
+<p><code>council_schemas.py</code></p>
+</li>
+<li>owns input normalization,</li>
+<li>
+<p>owns stable schema contract.</p>
+</li>
+<li>
+<p><code>council_tools.py</code></p>
+</li>
+<li>owns deterministic score/rank/evidence functions.</li>
+</ul>
+<h3>Dependency rules</h3>
+<ul>
+<li>Frontend không sở hữu scientific scoring.</li>
+<li>Flask route layer không nhúng prompt engineering hoặc ranking policy.</li>
+<li>AI council layer không tự đọc raw CSV.</li>
+<li>Deterministic layer không gọi model provider.</li>
+<li>Schema layer là contract authority duy nhất giữa UI và backend.</li>
+</ul>
+<h2>8) Prompt and response boundary</h2>
+<p>Để architecture này thật sự sắc, prompt path cũng phải có boundary rõ.</p>
+<h3>What goes into the model</h3>
+<p>Model không nhận raw request mơ hồ. Model nhận:</p>
+<ul>
+<li><code>mission mode</code>,</li>
+<li><code>player goal</code>,</li>
+<li>selected target,</li>
+<li>top ranked candidates,</li>
+<li>evidence summary,</li>
+<li>caution signals,</li>
+<li>recent actions,</li>
+<li>output schema instruction.</li>
+</ul>
+<h3>What never goes into the model</h3>
+<ul>
+<li>raw unrestricted dataset dump,</li>
+<li>authority để tự thêm field ngoài contract,</li>
+<li>quyền thay baseline score,</li>
+<li>quyền tự quyết khi evidence không đủ.</li>
+</ul>
+<h3>What comes out of the model</h3>
+<p>Model phải trả về reasoning payload có thể map vào:</p>
+<ul>
+<li><code>headline</code>,</li>
+<li><code>primary_recommendation</code>,</li>
+<li><code>council_votes</code>,</li>
+<li><code>player_options</code>,</li>
+<li><code>discovery_log_entry</code>.</li>
+</ul>
+<h2>9) Short input/output example</h2>
+<p>Ví dụ này ngắn nhưng đủ để người đọc hiểu đây là một hệ thống thật, không phải slideware.</p>
+<h3>Input snapshot</h3>
+<pre><code class="language-json">{
+  &quot;mode&quot;: &quot;discovery&quot;,
+  &quot;player_goal&quot;: &quot;find potentially habitable worlds&quot;,
+  &quot;selected_planet_id&quot;: &quot;Kepler-442 b&quot;,
+  &quot;filters&quot;: {
+    &quot;showConfirmed&quot;: true,
+    &quot;showHabitable&quot;: true,
+    &quot;radiusMin&quot;: 0.7,
+    &quot;radiusMax&quot;: 2.2,
+    &quot;periodMin&quot;: 1,
+    &quot;periodMax&quot;: 500
+  },
+  &quot;recent_actions&quot;: [&quot;spiral_scan&quot;, &quot;open_planet_modal&quot;]
+}
+</code></pre>
+<h3>Grounded evidence snapshot</h3>
+<pre><code class="language-json">{
+  &quot;primary_candidate&quot;: &quot;Kepler-442 b&quot;,
+  &quot;baseline_score&quot;: 0.81,
+  &quot;radius_earth&quot;: 1.34,
+  &quot;temp_k&quot;: 285.0,
+  &quot;insolation&quot;: 0.95,
+  &quot;eccentricity&quot;: 0.08,
+  &quot;period_days&quot;: 112.4,
+  &quot;risk_flags&quot;: [&quot;atmosphere_unknown&quot;]
+}
+</code></pre>
+<h3>Output snapshot</h3>
+<pre><code class="language-json">{
+  &quot;mission_status&quot;: &quot;candidate_with_risk&quot;,
+  &quot;headline&quot;: &quot;Council flags Kepler-442 b for deep review&quot;,
+  &quot;primary_recommendation&quot;: {
+    &quot;action&quot;: &quot;targeted_scan&quot;,
+    &quot;target_id&quot;: &quot;Kepler-442 b&quot;,
+    &quot;reason&quot;: &quot;Grounded evidence places the target near the habitable heuristic band.&quot;
+  },
+  &quot;council_votes&quot;: [
+    {
+      &quot;agent&quot;: &quot;Navigator&quot;,
+      &quot;stance&quot;: &quot;support&quot;,
+      &quot;confidence&quot;: 0.82,
+      &quot;message&quot;: &quot;This target should be prioritized next.&quot;
+    },
+    {
+      &quot;agent&quot;: &quot;Climate&quot;,
+      &quot;stance&quot;: &quot;caution&quot;,
+      &quot;confidence&quot;: 0.71,
+      &quot;message&quot;: &quot;Orbital uncertainty and missing atmosphere data limit certainty.&quot;
+    }
+  ]
+}
+</code></pre>
+<h2>10) Technical contracts</h2>
+<h3>Input contract (<code>mission_context_packet</code>)</h3>
+<pre><code class="language-json">{
+  &quot;mode&quot;: &quot;challenge&quot;,
+  &quot;player_goal&quot;: &quot;find high-potential habitable candidates in 5 minutes&quot;,
+  &quot;selected_planet_id&quot;: &quot;Kepler-442 b&quot;,
+  &quot;selected_piz_id&quot;: null,
+  &quot;filters&quot;: {
+    &quot;showConfirmed&quot;: true,
+    &quot;showHabitable&quot;: true,
+    &quot;radiusMin&quot;: 0.7,
+    &quot;radiusMax&quot;: 2.2,
+    &quot;periodMin&quot;: 1,
+    &quot;periodMax&quot;: 500
+  },
+  &quot;challenge_state&quot;: {
+    &quot;active&quot;: true,
+    &quot;objective&quot;: &quot;Find 2 candidate worlds&quot;,
+    &quot;progress&quot;: 1
+  },
+  &quot;recent_actions&quot;: [&quot;spiral_scan&quot;, &quot;open_planet_modal&quot;]
+}
+</code></pre>
+<h3>Output contract (<code>council_response_package</code>)</h3>
+<pre><code class="language-json">{
+  &quot;mission_status&quot;: &quot;candidate_with_risk&quot;,
+  &quot;headline&quot;: &quot;Council ưu tiên Kepler-442 b cho bước kế tiếp&quot;,
+  &quot;primary_recommendation&quot;: {
+    &quot;action&quot;: &quot;targeted_scan&quot;,
+    &quot;target_id&quot;: &quot;Kepler-442 b&quot;,
+    &quot;reason&quot;: &quot;Scored 0.81 on baseline habitability under current goal&quot;
+  },
+  &quot;council_votes&quot;: [
+    {
+      &quot;agent&quot;: &quot;Navigator&quot;,
+      &quot;stance&quot;: &quot;support&quot;,
+      &quot;confidence&quot;: 0.82,
+      &quot;message&quot;: &quot;Recommend targeted follow-up based on ranking gain.&quot;,
+      &quot;evidence_fields&quot;: [&quot;pl_orbper&quot;, &quot;pl_orbsmax&quot;, &quot;sy_dist&quot;]
+    },
+    {
+      &quot;agent&quot;: &quot;Astrobiologist&quot;,
+      &quot;stance&quot;: &quot;support&quot;,
+      &quot;confidence&quot;: 0.8,
+      &quot;message&quot;: &quot;Radius-temperature-insolation triad is within exploratory viability bounds.&quot;,
+      &quot;evidence_fields&quot;: [&quot;pl_rade&quot;, &quot;pl_eqt&quot;, &quot;pl_insol&quot;]
+    },
+    {
+      &quot;agent&quot;: &quot;Climate&quot;,
+      &quot;stance&quot;: &quot;caution&quot;,
+      &quot;confidence&quot;: 0.71,
+      &quot;message&quot;: &quot;Orbital uncertainty needs deeper verification.&quot;,
+      &quot;evidence_fields&quot;: [&quot;pl_orbeccen&quot;, &quot;pl_orbper&quot;, &quot;pl_orbincl&quot;]
+    }
+  ],
+  &quot;player_options&quot;: [
+    &quot;Run targeted scan&quot;,
+    &quot;Compare nearest analogs&quot;,
+    &quot;Open full data dossier&quot;
+  ],
+  &quot;discovery_log_entry&quot;: &quot;Kepler-442 b promoted after council triage.&quot;,
+  &quot;evidence_summary&quot;: {
+    &quot;radius_earth&quot;: 1.34,
+    &quot;temp_k&quot;: 285.0,
+    &quot;insolation&quot;: 0.95,
+    &quot;eccentricity&quot;: 0.08,
+    &quot;period_days&quot;: 112.4
+  }
+}
+</code></pre>
+<h3>Guardrails</h3>
+<ul>
+<li><code>mode</code> chỉ nhận <code>sandbox</code>, <code>challenge</code>, <code>discovery</code>.</li>
+<li>Numeric ranges được normalize và swap nếu đảo ngược.</li>
+<li><code>recent_actions</code> luôn là <code>list[str]</code> và bị cap.</li>
+<li>Provider path không được phép làm đổi keyset response.</li>
+<li>Nếu evidence không đủ, system phải nói rõ <code>insufficient_evidence</code>.</li>
+<li>AI output chỉ hợp lệ khi map được về evidence thật trong dataset.</li>
+</ul>
+<h3>Source of truth boundaries</h3>
+<ul>
+<li>Dataset source of truth: <code>data/orbital_elements.csv</code>.</li>
+<li>Metadata source of truth: <code>data/orbital_elements.meta.json</code>.</li>
+<li>Contract source of truth: <code>council_schemas.py</code>.</li>
+<li>Grounding source of truth: deterministic functions trong <code>council_tools.py</code>.</li>
+<li>Runtime reasoning source of truth: hybrid orchestration trong <code>council_orchestrator.py</code>.</li>
+</ul>
+<h2>11) Responsibility boundaries</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Owns</th>
+<th>Out of scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>React client</td>
+<td>Interaction, state aggregation, API calls, rendering</td>
+<td>Scientific scoring, dataset mutation</td>
+</tr>
+<tr>
+<td>Flask API</td>
+<td>HTTP boundary, payload intake, response transport</td>
+<td>Free-form science reasoning inside routes</td>
+</tr>
+<tr>
+<td><code>council_orchestrator.py</code></td>
+<td>Provider routing, council synthesis, response assembly</td>
+<td>Raw dataset IO, orbit propagation</td>
+</tr>
+<tr>
+<td><code>council_tools.py</code></td>
+<td>Deterministic ranking, scoring, evidence packet generation</td>
+<td>Network calls, provider control</td>
+</tr>
+<tr>
+<td><code>council_schemas.py</code></td>
+<td>Input normalization and stable contracts</td>
+<td>Endpoint transport</td>
+</tr>
+<tr>
+<td>Refresh scripts</td>
+<td>Catalog refresh and metadata publish</td>
+<td>Runtime council decision handling</td>
+</tr>
+</tbody>
+</table>
+<h2>12) Assumptions, non-goals, and design bets</h2>
+<h3>Assumption boundaries</h3>
+<table>
+<thead>
+<tr>
+<th>Boundary</th>
+<th>Statement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Guaranteed</td>
+<td>Frontend luôn nhận stable response keyset; fallback không làm vỡ UI contract; deterministic grounding chạy độc lập với provider state.</td>
+</tr>
+<tr>
+<td>Assumed</td>
+<td>API keys sẵn sàng cho phiên demo; catalog refresh hoàn tất trước giờ chấm; backend chạy local single-instance.</td>
+</tr>
+<tr>
+<td>Out of scope</td>
+<td>Horizontal scaling, multi-region deployment, long-lived production telemetry stack.</td>
+</tr>
+</tbody>
+</table>
+<h3>Non-goals</h3>
+<ul>
+<li>Không biến toàn bộ system thành một LLM blob.</li>
+<li>Không để model thay scoring baseline.</li>
+<li>Không bọc prompt engineering vào UI layer.</li>
+<li>Không đánh đổi demo reliability chỉ để theo đuổi một kiến trúc "đẹp trên giấy".</li>
+</ul>
+<h3>Key architectural bets</h3>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Why this is the right bet for hackathon</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Gemini</code> primary reasoning</td>
+<td>Làm AI trở thành phần trung tâm của product experience</td>
+<td>Phụ thuộc provider health</td>
+</tr>
+<tr>
+<td><code>Groq</code> fallback</td>
+<td>Bảo vệ demo continuity</td>
+<td>Tăng orchestration complexity</td>
+</tr>
+<tr>
+<td>Deterministic grounding layer</td>
+<td>Chặn hallucination và tăng khả năng defend trước judge kỹ thuật</td>
+<td>Cần giữ discipline khi mở rộng</td>
+</tr>
+<tr>
+<td>Stable structured contract</td>
+<td>FE render chắc, ít bug, dễ demo</td>
+<td>Ít tự do hơn response thuần text</td>
+</tr>
+<tr>
+<td>Data artifact freeze trước demo</td>
+<td>Giảm failure ngay trước giờ chấm</td>
+<td>Có thể không là snapshot mới nhất</td>
+</tr>
+</tbody>
+</table>
+<h2>13) Risks and mitigations</h2>
+<ol>
+<li>
+<p>AI mạnh nhưng không đáng tin.
+- Mitigation: mọi reasoning phải bám grounded evidence packet.</p>
+</li>
+<li>
+<p>Provider chính lỗi ngay lúc demo.
+- Mitigation: <code>Groq</code> fallback path với cùng contract và cùng evidence packet.</p>
+</li>
+<li>
+<p>FE phải branch riêng cho từng model path.
+- Mitigation: response assembly luôn hợp nhất về một schema duy nhất.</p>
+</li>
+<li>
+<p>Judge hỏi "Gemini ở đâu".
+- Mitigation: <code>Gemini</code> được chỉ ra trực tiếp trong sơ đồ hệ thống, request flow, fallback strategy, và runtime reasoning path.</p>
+</li>
+<li>
+<p>Judge hỏi "nếu AI bịa thì sao".
+- Mitigation: deterministic grounding, evidence fields, <code>insufficient_evidence</code>, hard line giữa AI layer và scoring layer.</p>
+</li>
+</ol>
+<h2>14) Conclusion</h2>
+<p>Atlas Orrery được thiết kế như một submission đang lao thẳng vào sân khấu hackathon: đủ dữ liệu thật để thuyết phục, đủ AI để tạo wow factor, đủ deterministic guardrails để không tự bắn vào chân, và đủ fallback strategy để sống sót qua áp lực demo. <code>Gemini</code> là trung tâm của intelligence layer. <code>Groq</code> là chiếc dù an toàn. Phần còn lại của hệ thống tồn tại để hai điều đó phát huy tác dụng mà không làm mất kiểm soát.</p>
+</body>
+</html>

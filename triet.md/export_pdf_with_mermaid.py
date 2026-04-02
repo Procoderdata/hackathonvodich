@@ -192,6 +192,8 @@ def main() -> None:
     settings = {
         'ATLAS_ORRERY_SYSTEM_PIPELINE_PDF.md': ('landscape', 140),
         'ATLAS_ORRERY_TECHNICAL_ARCHITECTURE_PDF.md': ('portrait', 220),
+        'SYSTEM_PIPELINE.md': ('landscape', 140),
+        'filemoi.md': ('portrait', 220),
     }
 
     for md in md_files:

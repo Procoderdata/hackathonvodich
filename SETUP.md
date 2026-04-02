@@ -14,13 +14,31 @@ python test_data.py
 
 ### 3. Chạy server
 ```bash
-python exoplanet_server.py
+export DEEPSEEK_API_KEY="your_deepseek_key_here"   # thêm sau nếu cần
+python server.py
 ```
 
 ### 4. Mở browser
 ```
 http://localhost:5000
 ```
+
+### DeepSeek Council (4 agent debate)
+- Endpoint `/api/council/respond` hỗ trợ 4-key / 4-role:
+  - `DEEPSEEK_API_KEY_NAVIGATOR`
+  - `DEEPSEEK_API_KEY_ASTROBIOLOGIST`
+  - `DEEPSEEK_API_KEY_CLIMATE`
+  - `DEEPSEEK_API_KEY_ARCHIVIST`
+- Hoặc dùng 1 biến gộp theo đúng thứ tự role:
+  - `DEEPSEEK_API_KEYS="key_nav,key_astro,key_climate,key_archivist"`
+- Nếu chỉ có 1 key thì dùng fallback:
+  - `DEEPSEEK_API_KEY`
+- Khi có key, endpoint `/api/council/respond` sẽ gọi DeepSeek để tạo tranh luận 4 vai trò:
+  - `Navigator`
+  - `Astrobiologist`
+  - `Climate`
+  - `Archivist`
+- Nếu chưa có key hoặc provider lỗi, hệ thống tự fallback sang deterministic council để demo không bị gãy.
 
 ## Cách sử dụng
 

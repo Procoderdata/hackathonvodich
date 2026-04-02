@@ -1,6 +1,6 @@
 function StatusPanel({ priorityCount, discoveryCount }) {
   return (
-    <section className="panel sidebar-panel">
+    <section className="panel status-panel">
       <h3>ATLAS COMMAND CENTER</h3>
       <p>&gt; STATUS: <span className="success">OPERATIONAL</span></p>
       <p>&gt; DIRECTOR: <span className="info">CLASSIFIED</span></p>
